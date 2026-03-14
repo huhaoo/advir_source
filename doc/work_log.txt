@@ -1,0 +1,39 @@
+work_log
+
+date: 2026-03-14
+workspace_root: /home/huhao/adv_ir
+
+latest_changes:
+1. merged control_map related implementation and demo into one file
+- file: /home/huhao/adv_ir/source/control_map.py
+- class name updated to snake_case: control_map
+- removed obsolete files:
+  - /home/huhao/adv_ir/source/build_control_map_demo.py
+  - /home/huhao/adv_ir/source/control_map_module_notes.txt
+
+2. implemented optimization demo in single file
+- generated random high-resolution loss map
+- optimized low-resolution learnable map by gradient descent
+- computed per-pixel loss map and found minimum-loss point
+- saved optimized high-resolution control map and visualizations
+
+3. documentation relocation
+- moved txt files from /home/huhao/adv_ir/source to /home/huhao/adv_ir/source/doc
+- files:
+  - /home/huhao/adv_ir/source/doc/agent_rule.txt
+  - /home/huhao/adv_ir/source/doc/module_document.txt
+  - /home/huhao/adv_ir/source/doc/work_log.txt
+
+key_commands:
+- cd ~/adv_ir && mkdir -p source/doc && mv source/agent_rule.txt source/module_document.txt source/work_log.txt source/doc/
+- conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/control_map.py
+
+latest_demo_outputs:
+- /home/huhao/adv_ir/tmp_demo/control_map_demo_stats.txt
+- /home/huhao/adv_ir/tmp_demo/control_map_low_res.png
+- /home/huhao/adv_ir/tmp_demo/control_map_high_res_optimized.png
+- /home/huhao/adv_ir/tmp_demo/random_high_res_loss_map.png
+- /home/huhao/adv_ir/tmp_demo/pixel_loss_map_with_min_point.png
+
+how_to_run:
+- conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/control_map.py

@@ -1,0 +1,40 @@
+module_document
+
+module_name: control_map
+location: /home/huhao/adv_ir/source/control_map.py
+
+design_goal:
+- Provide a reusable low_res -> high_res continuous control-map module for image restoration adversarial training.
+- Keep implementation generic for haze/rain/noise/blur style degradation fields.
+- Keep module and demo in one file for easier standalone execution.
+
+core_components:
+1. class control_map(nn.Module)
+- low-resolution learnable parameter map: shape (1, 1, low_res_height, low_res_width)
+- forward interpolation to high-resolution map: shape (1, 1, high_res_height, high_res_width)
+- value bound modes: none, sigmoid, tanh, clamp
+- initialization modes: zeros, constant, uniform, normal
+
+2. regularization methods
+- first_order_loss(): horizontal and vertical first-order finite differences (L1 mean)
+- second_order_loss(): horizontal and vertical second-order finite differences (L1 mean)
+- regularization_loss(): lambda_first_order * first_order + lambda_second_order * second_order
+- regularization_items(): returns tensor dict with first, second, and total
+
+3. demo entry
+- run_control_map_demo()
+- random high-resolution loss map generation
+- gradient descent to minimize total objective
+- min-loss point extraction on per-pixel loss map
+- visualization and stats saved to tmp_demo
+
+example_usage:
+- command:
+  conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/control_map.py
+
+expected_outputs:
+- /home/huhao/adv_ir/tmp_demo/control_map_demo_stats.txt
+- /home/huhao/adv_ir/tmp_demo/control_map_low_res.png
+- /home/huhao/adv_ir/tmp_demo/control_map_high_res_optimized.png
+- /home/huhao/adv_ir/tmp_demo/random_high_res_loss_map.png
+- /home/huhao/adv_ir/tmp_demo/pixel_loss_map_with_min_point.png
