@@ -28,6 +28,7 @@ hyperparameters:
 - interpolation: interp_mode (nearest/bilinear/bicubic/area), align_corners
 - regularization: lambda_first_order, lambda_second_order
 - value_bound: value_bound_mode (none/sigmoid/tanh/clamp), value_min, value_max
+- mean_control: mu (optional target mean of output map)
 - initialization: init_mode (zeros/constant/uniform/normal), init_value, init_scale
 
 parameter:
@@ -37,9 +38,9 @@ parameter:
 - role: learnable low-resolution control field
 
 forward_method:
-- signature: forward(mu: float | None = None) -> Tensor
+- signature: forward() -> Tensor
 - flow: interpolate -> value_bound -> optional mean shift
-- mean_shift_when_mu: output = output - output.mean() + mu
+- mean_shift_when_mu: if mu is not None, output = output - output.mean() + mu
 - output_shape: (1, 1, high_res_height, high_res_width)
 
 losses:

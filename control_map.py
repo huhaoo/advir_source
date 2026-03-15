@@ -23,13 +23,14 @@ class control_map(nn.Module):
         high_res_height: int,
         high_res_width: int,
         *,
-        interp_mode: str = "bilinear",
+        interp_mode: str = "bicubic",
         align_corners: bool = False,
         lambda_first_order: float = 1e-2,
         lambda_second_order: float = 1e-3,
-        value_bound_mode: str = "sigmoid",
+        value_bound_mode: str = "none",
         value_min: float = 0.0,
         value_max: float = 1.0,
+        mu: float | None = None,
         init_mode: str = "zeros",
         init_value: float = 0.0,
         init_scale: float = 0.1,
@@ -42,6 +43,8 @@ class control_map(nn.Module):
         self._validate_numeric(lambda_first_order, "lambda_first_order")
         self._validate_numeric(lambda_second_order, "lambda_second_order")
         self._validate_range(value_min, value_max)
+        if mu is not None:
+            self._validate_numeric(mu, "mu")
 
         if init_scale < 0:
             raise ValueError(f"init_scale must be non-negative, got {init_scale}")
@@ -60,6 +63,7 @@ class control_map(nn.Module):
         self.value_bound_mode = value_bound_mode
         self.value_min = float(value_min)
         self.value_max = float(value_max)
+        self.mu = float(mu) if mu is not None else None
 
         self.init_mode = init_mode
         self.init_value = float(init_value)
@@ -139,15 +143,15 @@ class control_map(nn.Module):
             return F.interpolate(x, size=size, mode=self.interp_mode, align_corners=self.align_corners)
         return F.interpolate(x, size=size, mode=self.interp_mode)
 
-    def forward(self, mu: float | None = None) -> Tensor:
+    def forward(self) -> Tensor:
         """Generate high-resolution continuous control map: [1, 1, H, W].
 
-        If mu is not None, shift the whole map so its mean equals mu.
+        If self.mu is not None, shift the whole map so its mean equals self.mu.
         """
         high_res = self._interpolate(self.low_res_param)
         high_res = self._apply_value_bound(high_res)
-        if mu is not None:
-            high_res = high_res - high_res.mean() + float(mu)
+        if self.mu is not None:
+            high_res = high_res - high_res.mean() + self.mu
         return high_res
 
     def get_low_res_map(self) -> Tensor:
