@@ -139,10 +139,16 @@ class control_map(nn.Module):
             return F.interpolate(x, size=size, mode=self.interp_mode, align_corners=self.align_corners)
         return F.interpolate(x, size=size, mode=self.interp_mode)
 
-    def forward(self) -> Tensor:
-        """Generate high-resolution continuous control map: [1, 1, H, W]."""
+    def forward(self, mu: float | None = None) -> Tensor:
+        """Generate high-resolution continuous control map: [1, 1, H, W].
+
+        If mu is not None, shift the whole map so its mean equals mu.
+        """
         high_res = self._interpolate(self.low_res_param)
-        return self._apply_value_bound(high_res)
+        high_res = self._apply_value_bound(high_res)
+        if mu is not None:
+            high_res = high_res - high_res.mean() + float(mu)
+        return high_res
 
     def get_low_res_map(self) -> Tensor:
         """Return learnable low-resolution control map parameter tensor."""

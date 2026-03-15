@@ -11,3 +11,4 @@ agent_rule
 9. Documentation txt files are stored in /home/huhao/adv_ir/source/doc.
 10. Demo outputs must be stored in /home/huhao/adv_ir/tmp_demo.
 11. Current control_map implementation is single-file: /home/huhao/adv_ir/source/control_map.py.
+12. Module documentation style must separate sections: hyperparameters, parameter, and forward_method.
