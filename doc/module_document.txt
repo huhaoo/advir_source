@@ -24,6 +24,7 @@ location: /home/huhao/adv_ir/source/control_map.py
 class_name: control_map (nn.Module)
 
 hyperparameters:
+- config_dataclass: ControlMapConfig
 - spatial: low_res_height, low_res_width, high_res_height, high_res_width
 - interpolation: interp_mode (nearest/bilinear/bicubic/area), align_corners
 - regularization: lambda_first_order, lambda_second_order
@@ -61,6 +62,7 @@ location: /home/huhao/adv_ir/source/control_map.py
 class_name: control_map_router (nn.Module)
 
 hyperparameters:
+- config_dataclass: ControlMapRouterConfig(map_config=ControlMapConfig)
 - map_count: num_maps
 - spatial: low_res_height, low_res_width, high_res_height, high_res_width
 - interpolation: interp_mode, align_corners
@@ -87,16 +89,15 @@ location: /home/huhao/adv_ir/source/degradation.py
 class_name: noise_degradation (nn.Module)
 
 hyperparameters:
-- image_height, image_width, num_channels
-- noise_strength
-- clamp_output, clamp_range
+- config_dataclass: NoiseDegradationConfig
+- image_height, image_width, num_channels, noise_strength
 
 parameter:
 - buffer: noise_map with shape (1, C, H, W), no grad
 
 forward_method:
 - signature: forward(fig) -> Tensor
-- formula: y = x + noise_strength * noise_map
+- formula: y = clamp(x + noise_strength * noise_map, 0, 1)
 - output_shape: same as input (B, C, H, W)
 
 losses:
@@ -110,16 +111,18 @@ location: /home/huhao/adv_ir/source/degradation.py
 class_name: rain_degradation (nn.Module)
 
 hyperparameters:
-- num_branches
-- control_map_router configs
+- config_dataclass: RainDegradationConfig
+- router_config: ControlMapRouterConfig
+- auto_rain_angle_jitter
 
 parameter:
 - internal module: control_map_router(num_maps=num_branches)
 
 forward_method:
-- signature: forward(original, degraded_list, topk=None) -> Tensor
+- signature: forward(original, degraded_list=None, topk=None) -> Tensor
 - original_shape: (B, C, H, W)
-- degraded_list_len: num_branches - 1
+- degraded_list_len: num_branches - 1 when provided
+- auto_behavior: when degraded_list is None, auto-generate candidates by add_rain()
 - stack_shape_before_router: (B, N, C, H, W)
 - output_shape: (B, C, H, W)
 
@@ -128,6 +131,8 @@ losses:
 - get_regularization_items: forwarded from internal router
 
 extras:
+- add_rain(original, value=None, length=None, angle=None, width=None): synthesize one rain candidate with random defaults
+- last_auto_rain_params: stores latest auto-generated rain params list
 - get_weight_maps(topk=None)
 - get_logits()
 
@@ -138,7 +143,8 @@ location: /home/huhao/adv_ir/source/degradation.py
 class_name: haze_degradation (nn.Module)
 
 hyperparameters:
-- control_map configs
+- config_dataclass: HazeDegradationConfig
+- map_config: ControlMapConfig
 - airlight_init
 - beta_mean, beta_std, min_beta
 
@@ -160,6 +166,28 @@ losses:
 outputs:
 - /home/huhao/adv_ir/tmp_demo (runtime demos and generated artifacts)
 
+### function random_degradation_configs_from_image
+
+module_name: random_degradation_configs_from_image
+location: /home/huhao/adv_ir/source/degradation.py
+class_name: function
+
+purpose:
+- given one image tensor, sample a valid triplet of Noise/Rain/Haze dataclass configs
+
+input:
+- image shape: (B, C, H, W) or (C, H, W)
+
+sampling_rules:
+- noise_strength in {15, 25, 50} / 255
+- rain router num_maps in {4, 8, 16}
+- haze airlight base in [0.85, 1.0], per-channel jitter +-0.02, channel clamp to [0.85, 1.0]
+- haze beta_mean in [1.0, 1.3]
+- haze beta_std in [0.05, 0.2]
+
+return:
+- (NoiseDegradationConfig, RainDegradationConfig, HazeDegradationConfig)
+
 ### demo entry
 
 module_name: degradation_showcase_demo
@@ -168,8 +196,9 @@ entry: run_noise_rain_haze_controller_demo()
 run_command: conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/demo.py
 behavior:
 - resets /home/huhao/adv_ir/tmp_demo before running
-- demonstrates controller reset sampling and ordered execution
-- prints current enabled degradations, order, sampled params, output shape, and regularization
+- demonstrates dataclass config construction and ordered execution
+- prints current enabled degradations, order, fixed configs, output shape, and regularization
+- runs rain auto candidate mode and prints rain_auto_params with angle gap summary
 - saves controller demo outputs and stats text under /home/huhao/adv_ir/tmp_demo
 
 ### class noise_rain_haze_degradation
@@ -179,17 +208,18 @@ location: /home/huhao/adv_ir/source/degradation.py
 class_name: noise_rain_haze_degradation (nn.Module)
 
 purpose:
-- unified controller for noise/rain/haze degradations with per-reset random state
+- unified controller for noise/rain/haze degradations with explicit enable flags
 
 constructor:
-- noise_config, rain_config, haze_config: each value supports fixed / pair-range / discrete candidates
-- enable_noise_prob, enable_rain_prob, enable_haze_prob
+- noise_config: NoiseDegradationConfig
+- rain_config: RainDegradationConfig
+- haze_config: HazeDegradationConfig
+- enable_noise, enable_rain, enable_haze: bool
 
 reset_behavior:
-- signature: reset_parameters(enable_noise=None, enable_rain=None, enable_haze=None)
-- samples enable flags (unless explicitly overridden)
-- samples current params for all three submodules
-- applies sampled params to submodules and resets submodule states
+- signature: reset_parameters()
+- resets all three submodules
+- rebuilds execution order
 - execution order rule:
 	- rain/haze random order when both enabled
 	- noise always last when enabled
@@ -198,11 +228,11 @@ forward_method:
 - signature: forward(image, distance_map=None, rain_degraded_list=None, rain_topk=None) -> Tensor
 - returns only degraded image tensor
 - haze requires distance_map
-- rain requires rain_degraded_list
+- rain_degraded_list is optional (None triggers auto rain candidate generation in rain module)
 
 regularization:
 - get_regularization_loss
 - get_regularization_items with keys: loss_noise, loss_rain, loss_haze, loss_total
 
 state:
-- get_current_state returns enable flags, current order, and sampled params
+- get_current_state returns enable flags, current order, and config dicts (noise_config/rain_config/haze_config)

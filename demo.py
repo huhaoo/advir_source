@@ -352,11 +352,11 @@ def run_noise_rain_haze_controller_demo() -> None:
         image_height=h,
         image_width=w,
         num_channels=3,
-        noise_strength=0.35,
+        noise_strength=0.2,
     )
     rain_cfg = RainDegradationConfig(
         router_config=ControlMapRouterConfig(
-            num_maps=3,
+            num_maps=8,
             map_config=ControlMapConfig(
                 low_res_height=16,
                 low_res_width=16,
@@ -388,8 +388,8 @@ def run_noise_rain_haze_controller_demo() -> None:
             init_scale=0.4,
         ),
         airlight_init=0.92,
-        beta_mean=1.6,
-        beta_std=0.5,
+        beta_mean=0.4,
+        beta_std=0.1,
         min_beta=1e-3,
     )
 
@@ -407,7 +407,7 @@ def run_noise_rain_haze_controller_demo() -> None:
         image=image,
         distance_map=distance_map,
         rain_degraded_list=None,
-        rain_topk=2,
+        rain_topk=3,
     )
     state = controller.get_current_state()
     reg_items = controller.get_regularization_items()

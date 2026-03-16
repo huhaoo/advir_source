@@ -72,11 +72,11 @@ def random_degradation_configs_from_image(
         airlight.append(min(max(airlight_base + jitter, 0.85), 1.0))
     airlight_tuple = (float(airlight[0]), float(airlight[1]), float(airlight[2]))
 
-    beta_mean = 1.0 + 0.3 * float(torch.rand(1).item())
-    beta_std = 0.05 + 0.15 * float(torch.rand(1).item())
+    beta_mean = 0.1 + 0.4 * float(torch.rand(1).item())
+    beta_std = beta_mean * (0.05 + 0.25 * float(torch.rand(1).item()))
 
     rain_lh, rain_lw = max(4, min(16, h)), max(4, min(16, w))
-    haze_lh, haze_lw = max(4, min(12, h)), max(4, min(16, w))
+    haze_lh, haze_lw = max(4, min(16, h)), max(4, min(16, w))
 
     noise_cfg = NoiseDegradationConfig(
         image_height=int(h),
