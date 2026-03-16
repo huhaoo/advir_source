@@ -9,7 +9,11 @@ import torch
 from torch import Tensor, nn
 import torch.nn.functional as F
 
+from control_map import ControlMapConfig, ControlMapRouterConfig
 from degradation import (
+    HazeDegradationConfig,
+    NoiseDegradationConfig,
+    RainDegradationConfig,
     haze_degradation,
     noise_degradation,
     noise_rain_haze_degradation,
@@ -151,12 +155,12 @@ def run_degradation_showcase() -> None:
     edge_target = _sobel_edge_map(image).detach()
 
     noise_module = noise_degradation(
-        image_height=h,
-        image_width=w,
-        num_channels=3,
-        noise_strength=0.6,
-        clamp_output=True,
-        clamp_range=(0.0, 1.0),
+        NoiseDegradationConfig(
+            image_height=h,
+            image_width=w,
+            num_channels=3,
+            noise_strength=0.6,
+        )
     )
     noise_module.reset_parameters()
     noise_before = noise_module(image)
@@ -178,19 +182,25 @@ def run_degradation_showcase() -> None:
     noise_after = noise_module(image)
 
     rain_module = rain_degradation(
-        num_branches=3,
-        low_res_height=16,
-        low_res_width=16,
-        high_res_height=h,
-        high_res_width=w,
-        interp_mode="bicubic",
-        align_corners=False,
-        lambda_first_order=2e-2,
-        lambda_second_order=1e-2,
-        init_mode="zeros",
-        init_value=0.0,
-        init_scale=1.0,
-        temperature=0.25,
+        RainDegradationConfig(
+            router_config=ControlMapRouterConfig(
+                num_maps=3,
+                map_config=ControlMapConfig(
+                    low_res_height=16,
+                    low_res_width=16,
+                    high_res_height=h,
+                    high_res_width=w,
+                    interp_mode="bicubic",
+                    align_corners=False,
+                    lambda_first_order=2e-2,
+                    lambda_second_order=1e-2,
+                    init_mode="zeros",
+                    init_value=0.0,
+                    init_scale=1.0,
+                ),
+                temperature=0.25,
+            )
+        )
     )
     _init_rain_router_patterns(rain_module)
     rain_candidate_1 = _make_rain_candidate_vertical(image)
@@ -218,21 +228,25 @@ def run_degradation_showcase() -> None:
     distance_map = (depth_map - depth_min) / (depth_max - depth_min + 1e-6)
     distance_map = 0.1 + 3.2 * distance_map
     haze_module = haze_degradation(
-        low_res_height=12,
-        low_res_width=16,
-        high_res_height=h,
-        high_res_width=w,
-        interp_mode="bicubic",
-        align_corners=False,
-        lambda_first_order=1e-2,
-        lambda_second_order=1e-3,
-        init_mode="normal",
-        init_value=0.0,
-        init_scale=0.6,
-        airlight_init=(1.0, 0.95, 0.9),
-        beta_mean=2.2,
-        beta_std=1.1,
-        min_beta=1e-3,
+        HazeDegradationConfig(
+            map_config=ControlMapConfig(
+                low_res_height=12,
+                low_res_width=16,
+                high_res_height=h,
+                high_res_width=w,
+                interp_mode="bicubic",
+                align_corners=False,
+                lambda_first_order=1e-2,
+                lambda_second_order=1e-3,
+                init_mode="normal",
+                init_value=0.0,
+                init_scale=0.6,
+            ),
+            airlight_init=(1.0, 0.95, 0.9),
+            beta_mean=2.2,
+            beta_std=1.1,
+            min_beta=1e-3,
+        )
     )
     haze_before = haze_module(image, distance_map)
 
@@ -334,70 +348,79 @@ def run_noise_rain_haze_controller_demo() -> None:
     distance_map = (depth_map - depth_min) / (depth_max - depth_min + 1e-6)
     distance_map = 0.1 + 2.8 * distance_map
 
-    rain_candidates = [_make_rain_candidate_vertical(image), _make_rain_candidate_diag(image)]
-
-    noise_cfg = {
-        "image_height": h,
-        "image_width": w,
-        "num_channels": 3,
-        "noise_strength": (0.15, 0.55),
-        "clamp_output": True,
-    }
-    rain_cfg = {
-        "num_branches": 3,
-        "low_res_height": 16,
-        "low_res_width": 16,
-        "high_res_height": h,
-        "high_res_width": w,
-        "interp_mode": "bicubic",
-        "align_corners": False,
-        "lambda_first_order": (0.0, 0.03),
-        "lambda_second_order": (0.0, 0.02),
-        "init_mode": "zeros",
-        "init_value": 0.0,
-        "init_scale": 1.0,
-        "temperature": [0.2, 0.35, 0.6],
-    }
-    haze_cfg = {
-        "low_res_height": 12,
-        "low_res_width": 16,
-        "high_res_height": h,
-        "high_res_width": w,
-        "interp_mode": "bicubic",
-        "align_corners": False,
-        "lambda_first_order": (0.0, 0.02),
-        "lambda_second_order": (0.0, 0.01),
-        "init_mode": "normal",
-        "init_value": 0.0,
-        "init_scale": [0.2, 0.4, 0.8],
-        "airlight_init": [0.85, 0.92, 1.0],
-        "beta_mean": (0.8, 2.4),
-        "beta_std": [0.2, 0.5, 0.9],
-        "min_beta": 1e-3,
-    }
+    noise_cfg = NoiseDegradationConfig(
+        image_height=h,
+        image_width=w,
+        num_channels=3,
+        noise_strength=0.35,
+    )
+    rain_cfg = RainDegradationConfig(
+        router_config=ControlMapRouterConfig(
+            num_maps=3,
+            map_config=ControlMapConfig(
+                low_res_height=16,
+                low_res_width=16,
+                high_res_height=h,
+                high_res_width=w,
+                interp_mode="bicubic",
+                align_corners=False,
+                lambda_first_order=0.02,
+                lambda_second_order=0.01,
+                init_mode="zeros",
+                init_value=0.0,
+                init_scale=1.0,
+            ),
+            temperature=0.35,
+        ),
+    )
+    haze_cfg = HazeDegradationConfig(
+        map_config=ControlMapConfig(
+            low_res_height=12,
+            low_res_width=16,
+            high_res_height=h,
+            high_res_width=w,
+            interp_mode="bicubic",
+            align_corners=False,
+            lambda_first_order=0.01,
+            lambda_second_order=0.005,
+            init_mode="normal",
+            init_value=0.0,
+            init_scale=0.4,
+        ),
+        airlight_init=0.92,
+        beta_mean=1.6,
+        beta_std=0.5,
+        min_beta=1e-3,
+    )
 
     controller = noise_rain_haze_degradation(
         noise_config=noise_cfg,
         rain_config=rain_cfg,
         haze_config=haze_cfg,
-        enable_noise_prob=0.9,
-        enable_rain_prob=0.8,
-        enable_haze_prob=0.8,
+        enable_noise=True,
+        enable_rain=True,
+        enable_haze=True,
     )
-    controller.reset_parameters(enable_noise=True, enable_rain=True, enable_haze=True)
+    controller.reset_parameters()
 
     output = controller(
         image=image,
         distance_map=distance_map,
-        rain_degraded_list=rain_candidates,
+        rain_degraded_list=None,
         rain_topk=2,
     )
     state = controller.get_current_state()
     reg_items = controller.get_regularization_items()
+    auto_rain_params = list(controller.rain_module.last_auto_rain_params)
+    rain_angles = [float(p["angle"]) for p in auto_rain_params]
+    rain_angle_gap = (max(rain_angles) - min(rain_angles)) if len(rain_angles) >= 2 else 0.0
+    rain_preview = controller.rain_module.add_rain(image, **auto_rain_params[0]) if len(auto_rain_params) > 0 else image
 
     output_png = output_dir / "controller_output.png"
+    rain_png = output_dir / "controller_rain_auto_sample.png"
     stats_txt = output_dir / "controller_demo_stats.txt"
     _save_tensor_png(image, output_dir / "controller_input.png", "controller_input")
+    _save_tensor_png(rain_preview, rain_png, "controller_rain_auto_sample")
     _save_tensor_png(output, output_png, "controller_output")
 
     lines = [
@@ -407,14 +430,19 @@ def run_noise_rain_haze_controller_demo() -> None:
         f"depth_path={depth_path}",
         f"input_shape={tuple(image.shape)}",
         f"output_shape={tuple(output.shape)}",
+        f"rain_auto_params={auto_rain_params}",
+        f"rain_angle_gap={rain_angle_gap:.6f}",
         f"current_state={state}",
         f"regularization_items={{'loss_noise': {reg_items['loss_noise'].item():.10f}, 'loss_rain': {reg_items['loss_rain'].item():.10f}, 'loss_haze': {reg_items['loss_haze'].item():.10f}, 'loss_total': {reg_items['loss_total'].item():.10f}}}",
+        f"rain_png={rain_png}",
         f"output_png={output_png}",
     ]
     stats_txt.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     print(f"controller_state={state}")
     print(f"output_shape={tuple(output.shape)}")
+    print(f"rain_auto_params={auto_rain_params}")
+    print(f"rain_angle_gap={rain_angle_gap:.6f}")
     print(
         "regularization_items="
         f"{{'loss_noise': {reg_items['loss_noise'].item():.10f}, "
@@ -423,7 +451,7 @@ def run_noise_rain_haze_controller_demo() -> None:
         f"'loss_total': {reg_items['loss_total'].item():.10f}}}"
     )
     print(f"output_dir={output_dir}")
-    print(f"generated_files={[str(output_dir / 'controller_input.png'), str(output_png), str(stats_txt)]}")
+    print(f"generated_files={[str(output_dir / 'controller_input.png'), str(rain_png), str(output_png), str(stats_txt)]}")
 
 
 if __name__ == "__main__":

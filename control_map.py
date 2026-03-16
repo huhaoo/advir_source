@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import torch
 from torch import Tensor, nn
 import torch.nn.functional as F
@@ -9,25 +11,48 @@ allowed_interp_modes = {"nearest", "bilinear", "bicubic", "area"}
 allowed_init_modes = {"zeros", "constant", "uniform", "normal"}
 
 
+@dataclass
+class ControlMapConfig:
+    low_res_height: int
+    low_res_width: int
+    high_res_height: int
+    high_res_width: int
+    interp_mode: str = "bicubic"
+    align_corners: bool | None = False
+    lambda_first_order: float = 1e-2
+    lambda_second_order: float = 1e-3
+    init_mode: str = "zeros"
+    init_value: float = 0.0
+    init_scale: float = 0.1
+
+
+@dataclass
+class ControlMapRouterConfig:
+    num_maps: int
+    map_config: ControlMapConfig
+    temperature: float = 1.0
+
+
 class control_map(nn.Module):
     """Generic continuous control-map module for restoration degradation fields."""
 
-    def __init__(
-        self,
-        low_res_height: int,
-        low_res_width: int,
-        high_res_height: int,
-        high_res_width: int,
-        *,
-        interp_mode: str = "bicubic",
-        align_corners: bool = False,
-        lambda_first_order: float = 1e-2,
-        lambda_second_order: float = 1e-3,
-        init_mode: str = "zeros",
-        init_value: float = 0.0,
-        init_scale: float = 0.1,
-    ) -> None:
+    def __init__(self, config: ControlMapConfig) -> None:
         super().__init__()
+        if not isinstance(config, ControlMapConfig):
+            raise ValueError(f"config must be ControlMapConfig, got {type(config)!r}")
+
+        low_res_height = config.low_res_height
+        low_res_width = config.low_res_width
+        high_res_height = config.high_res_height
+        high_res_width = config.high_res_width
+        interp_mode = config.interp_mode
+        align_corners = config.align_corners
+        lambda_first_order = config.lambda_first_order
+        lambda_second_order = config.lambda_second_order
+        init_mode = config.init_mode
+        init_value = config.init_value
+        init_scale = config.init_scale
+
         self._validate_spatial(low_res_height, low_res_width, high_res_height, high_res_width)
         if interp_mode not in allowed_interp_modes:
             raise ValueError(f"interp_mode must be one of {allowed_interp_modes}, got {interp_mode!r}")
@@ -39,10 +64,10 @@ class control_map(nn.Module):
         if init_scale < 0:
             raise ValueError(f"init_scale must be non-negative, got {init_scale}")
 
-        self.low_res_height = low_res_height
-        self.low_res_width = low_res_width
-        self.high_res_height = high_res_height
-        self.high_res_width = high_res_width
+        self.low_res_height = int(low_res_height)
+        self.low_res_width = int(low_res_width)
+        self.high_res_height = int(high_res_height)
+        self.high_res_width = int(high_res_width)
 
         self.interp_mode = interp_mode
         self.align_corners = align_corners
@@ -132,51 +157,48 @@ class control_map_router(nn.Module):
     - ``routing_maps`` returns weight maps (and optional logits) for analysis.
     """
 
-    def __init__(
-        self,
-        num_maps: int,
-        low_res_height: int,
-        low_res_width: int,
-        high_res_height: int,
-        high_res_width: int,
-        interp_mode: str = "bilinear",
-        align_corners: bool | None = False,
-        lambda_first_order: float = 0.0,
-        lambda_second_order: float = 0.0,
-        init_mode: str = "zeros",
-        init_value: float = 0.0,
-        init_scale: float = 1.0,
-        temperature: float = 1.0,
-    ) -> None:
+    def __init__(self, config: ControlMapRouterConfig) -> None:
         super().__init__()
+        if not isinstance(config, ControlMapRouterConfig):
+            raise ValueError(f"config must be ControlMapRouterConfig, got {type(config)!r}")
+        if not isinstance(config.map_config, ControlMapConfig):
+            raise ValueError(f"config.map_config must be ControlMapConfig, got {type(config.map_config)!r}")
+
+        num_maps = config.num_maps
+        temperature = config.temperature
+        map_config = config.map_config
+
         if not isinstance(num_maps, int) or num_maps <= 0:
             raise ValueError(f"num_maps must be a positive integer, got {num_maps}")
         if not isinstance(temperature, (int, float)): raise ValueError(f"temperature must be numeric, got {type(temperature)!r}")
         if temperature <= 0: raise ValueError(f"temperature must be > 0, got {temperature}")
+        align_corners = map_config.align_corners
         if align_corners is not None and not isinstance(align_corners, bool): raise ValueError(f"align_corners must be bool or None, got {type(align_corners)!r}")
 
         self.num_maps = int(num_maps)
-        self.low_res_height = int(low_res_height)
-        self.low_res_width = int(low_res_width)
-        self.high_res_height = int(high_res_height)
-        self.high_res_width = int(high_res_width)
+        self.low_res_height = int(map_config.low_res_height)
+        self.low_res_width = int(map_config.low_res_width)
+        self.high_res_height = int(map_config.high_res_height)
+        self.high_res_width = int(map_config.high_res_width)
         self.temperature = float(temperature)
 
         map_align_corners = False if align_corners is None else align_corners
         self.maps = nn.ModuleList(
             [
                 control_map(
-                    low_res_height=self.low_res_height,
-                    low_res_width=self.low_res_width,
-                    high_res_height=self.high_res_height,
-                    high_res_width=self.high_res_width,
-                    interp_mode=interp_mode,
-                    align_corners=map_align_corners,
-                    lambda_first_order=lambda_first_order,
-                    lambda_second_order=lambda_second_order,
-                    init_mode=init_mode,
-                    init_value=init_value,
-                    init_scale=init_scale,
+                    ControlMapConfig(
+                        low_res_height=self.low_res_height,
+                        low_res_width=self.low_res_width,
+                        high_res_height=self.high_res_height,
+                        high_res_width=self.high_res_width,
+                        interp_mode=map_config.interp_mode,
+                        align_corners=map_align_corners,
+                        lambda_first_order=map_config.lambda_first_order,
+                        lambda_second_order=map_config.lambda_second_order,
+                        init_mode=map_config.init_mode,
+                        init_value=map_config.init_value,
+                        init_scale=map_config.init_scale,
+                    )
                 )
                 for _ in range(self.num_maps)
             ]
