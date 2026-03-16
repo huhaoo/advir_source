@@ -27,8 +27,6 @@ hyperparameters:
 - spatial: low_res_height, low_res_width, high_res_height, high_res_width
 - interpolation: interp_mode (nearest/bilinear/bicubic/area), align_corners
 - regularization: lambda_first_order, lambda_second_order
-- value_bound: value_bound_mode (none/sigmoid/tanh/clamp), value_min, value_max
-- mean_control: mu (optional target mean of output map)
 - initialization: init_mode (zeros/constant/uniform/normal), init_value, init_scale
 
 parameter:
@@ -39,8 +37,7 @@ parameter:
 
 forward_method:
 - signature: forward() -> Tensor
-- flow: interpolate -> value_bound -> optional mean shift
-- mean_shift_when_mu: if mu is not None, output = output - output.mean() + mu
+- flow: interpolate only
 - output_shape: (1, 1, high_res_height, high_res_width)
 
 losses:
@@ -50,13 +47,162 @@ losses:
 - regularization_items: tensor dict with loss_first_order, loss_second_order, loss_total
 
 demo:
-- entry: run_control_map_demo()
+- entry: run_degradation_modules_demo()
 - run_command: conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/control_map.py
-- behavior: random high-res loss map + gradient descent + min-loss point extraction
+- behavior: prints output shapes for noise/rain/haze degradation modules
 
 outputs:
-- /home/huhao/adv_ir/tmp_demo/control_map_demo_stats.txt
-- /home/huhao/adv_ir/tmp_demo/control_map_low_res.png
-- /home/huhao/adv_ir/tmp_demo/control_map_high_res_optimized.png
-- /home/huhao/adv_ir/tmp_demo/random_high_res_loss_map.png
-- /home/huhao/adv_ir/tmp_demo/pixel_loss_map_with_min_point.png
+- /home/huhao/adv_ir/tmp_demo (reset before demo)
+
+### class control_map_router
+
+module_name: control_map_router
+location: /home/huhao/adv_ir/source/control_map.py
+class_name: control_map_router (nn.Module)
+
+hyperparameters:
+- map_count: num_maps
+- spatial: low_res_height, low_res_width, high_res_height, high_res_width
+- interpolation: interp_mode, align_corners
+- regularization: lambda_first_order, lambda_second_order
+- initialization: init_mode, init_value, init_scale
+- routing: temperature
+
+forward_method:
+- signature: forward(inputs, top_k=None) -> Tensor
+- inputs_shape: (B, N, C, H, W)
+- output_shape: (B, C, H, W)
+
+losses:
+- regularization_items: returns loss_first_order, loss_second_order, loss_total
+- regularization_loss: returns scalar total loss
+
+extras:
+- routing_maps(top_k=None, return_logits=False)
+
+### class noise_degradation
+
+module_name: noise_degradation
+location: /home/huhao/adv_ir/source/degradation.py
+class_name: noise_degradation (nn.Module)
+
+hyperparameters:
+- image_height, image_width, num_channels
+- noise_strength
+- clamp_output, clamp_range
+
+parameter:
+- buffer: noise_map with shape (1, C, H, W), no grad
+
+forward_method:
+- signature: forward(fig) -> Tensor
+- formula: y = x + noise_strength * noise_map
+- output_shape: same as input (B, C, H, W)
+
+losses:
+- get_regularization_loss: returns zero tensor
+- get_regularization_items: returns zero dict items
+
+### class rain_degradation
+
+module_name: rain_degradation
+location: /home/huhao/adv_ir/source/degradation.py
+class_name: rain_degradation (nn.Module)
+
+hyperparameters:
+- num_branches
+- control_map_router configs
+
+parameter:
+- internal module: control_map_router(num_maps=num_branches)
+
+forward_method:
+- signature: forward(original, degraded_list, topk=None) -> Tensor
+- original_shape: (B, C, H, W)
+- degraded_list_len: num_branches - 1
+- stack_shape_before_router: (B, N, C, H, W)
+- output_shape: (B, C, H, W)
+
+losses:
+- get_regularization_loss: forwarded from internal router
+- get_regularization_items: forwarded from internal router
+
+extras:
+- get_weight_maps(topk=None)
+- get_logits()
+
+### class haze_degradation
+
+module_name: haze_degradation
+location: /home/huhao/adv_ir/source/degradation.py
+class_name: haze_degradation (nn.Module)
+
+hyperparameters:
+- control_map configs
+- airlight_init
+- beta_mean, beta_std, min_beta
+
+parameter:
+- internal module: control_map (for spatial beta base)
+- fixed buffer: airlight with shape (1, 1, 1, 1) or (1, C, 1, 1), initialized by airlight_init
+
+forward_method:
+- signature: forward(image, distance_map) -> Tensor
+- image_shape: (B, C, H, W)
+- distance_map_shape: (B, 1, H, W) or (B, C, H, W)
+- formula: t = exp(-beta * d), y = x * t + A * (1 - t)
+- output_shape: (B, C, H, W)
+
+losses:
+- get_regularization_loss: from internal control_map
+- get_regularization_items: from internal control_map
+
+outputs:
+- /home/huhao/adv_ir/tmp_demo (runtime demos and generated artifacts)
+
+### demo entry
+
+module_name: degradation_showcase_demo
+location: /home/huhao/adv_ir/source/demo.py
+entry: run_noise_rain_haze_controller_demo()
+run_command: conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/demo.py
+behavior:
+- resets /home/huhao/adv_ir/tmp_demo before running
+- demonstrates controller reset sampling and ordered execution
+- prints current enabled degradations, order, sampled params, output shape, and regularization
+- saves controller demo outputs and stats text under /home/huhao/adv_ir/tmp_demo
+
+### class noise_rain_haze_degradation
+
+module_name: noise_rain_haze_degradation
+location: /home/huhao/adv_ir/source/degradation.py
+class_name: noise_rain_haze_degradation (nn.Module)
+
+purpose:
+- unified controller for noise/rain/haze degradations with per-reset random state
+
+constructor:
+- noise_config, rain_config, haze_config: each value supports fixed / pair-range / discrete candidates
+- enable_noise_prob, enable_rain_prob, enable_haze_prob
+
+reset_behavior:
+- signature: reset_parameters(enable_noise=None, enable_rain=None, enable_haze=None)
+- samples enable flags (unless explicitly overridden)
+- samples current params for all three submodules
+- applies sampled params to submodules and resets submodule states
+- execution order rule:
+	- rain/haze random order when both enabled
+	- noise always last when enabled
+
+forward_method:
+- signature: forward(image, distance_map=None, rain_degraded_list=None, rain_topk=None) -> Tensor
+- returns only degraded image tensor
+- haze requires distance_map
+- rain requires rain_degraded_list
+
+regularization:
+- get_regularization_loss
+- get_regularization_items with keys: loss_noise, loss_rain, loss_haze, loss_total
+
+state:
+- get_current_state returns enable flags, current order, and sampled params

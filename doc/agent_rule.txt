@@ -8,5 +8,5 @@ agent_rule
 6. Install dependencies via command line only.
 7. Do not modify /home/huhao/adv_ir/NAFNet or /home/huhao/adv_ir/PromptIR unless absolutely required.
 8. New implementation files go under /home/huhao/adv_ir/source.
-9. Documentation txt files are stored in /home/huhao/adv_ir/source/doc.
-10. Demo outputs must be stored in /home/huhao/adv_ir/tmp_demo.
+9. Documentation txt files are stored in /home/huhao/adv_ir/source/doc. After modifications, remember to also update the doc files.
+10. Demo outputs must be stored in /home/huhao/adv_ir/tmp_demo. Generate a demo for every change.

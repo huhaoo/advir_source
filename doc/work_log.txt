@@ -37,3 +37,172 @@ latest_demo_outputs:
 
 how_to_run:
 - conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/control_map.py
+
+date: 2026-03-15
+workspace_root: /home/huhao/adv_ir
+
+latest_changes:
+1. control_map and control_map_router API cleanup
+- file: /home/huhao/adv_ir/source/control_map.py
+- removed control_map value bound and mean-shift related params:
+  - value_bound_mode
+  - value_min
+  - value_max
+  - mu
+- control_map_router forward now returns only fused image tensor
+- regularization moved to independent methods:
+  - regularization_loss
+  - regularization_items
+
+2. added three degradation modules
+- file: /home/huhao/adv_ir/source/control_map.py
+- classes:
+  - noise_degradation
+  - rain_degradation
+  - haze_degradation
+- common style:
+  - forward only returns degraded image
+  - get_regularization_loss and get_regularization_items for training integration
+  - reset_parameters supported
+
+3. added minimal random-tensor demo
+- entry: run_degradation_modules_demo()
+- resets /home/huhao/adv_ir/tmp_demo before run
+- prints output shapes for noise/rain/haze modules
+
+validation:
+- command: conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/control_map.py
+- output:
+  - noise_output_shape=(2, 3, 64, 64)
+  - rain_output_shape=(2, 3, 64, 64)
+  - haze_output_shape=(2, 3, 64, 64)
+
+date: 2026-03-15
+workspace_root: /home/huhao/adv_ir
+
+latest_changes:
+1. split degradation modules into dedicated file
+- moved classes to /home/huhao/adv_ir/source/degradation.py:
+  - noise_degradation
+  - rain_degradation
+  - haze_degradation
+- /home/huhao/adv_ir/source/control_map.py now keeps only:
+  - control_map
+  - control_map_router
+
+2. moved demo logic into dedicated demo.py
+- new file: /home/huhao/adv_ir/source/demo.py
+- entry: run_degradation_showcase()
+- behavior:
+  - resets /home/huhao/adv_ir/tmp_demo before run
+  - runs 3 stronger visual scenarios for noise/rain/haze
+  - saves png outputs and stats txt in /home/huhao/adv_ir/tmp_demo
+
+validation:
+- command: conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/demo.py
+- output: generated_files list under /home/huhao/adv_ir/tmp_demo
+
+date: 2026-03-16
+workspace_root: /home/huhao/adv_ir
+
+latest_changes:
+1. fixed haze black-fog issue in haze_degradation
+- file: /home/huhao/adv_ir/source/degradation.py
+- root cause: trainable airlight could be optimized to very low values, making haze term dark
+- fix:
+  - added airlight_min and airlight_max hyperparameters (default: 0.6, 1.0)
+  - bounded airlight in forward via clamp to physical bright range
+  - reset/init also clamp airlight into the same range
+  - added get_airlight() for inspection
+
+2. added haze airlight diagnostics in demo stats
+- file: /home/huhao/adv_ir/source/demo.py
+- stats now include:
+  - haze_airlight_min_bound / haze_airlight_max_bound
+  - haze_airlight_actual_min / haze_airlight_actual_max
+
+date: 2026-03-16
+workspace_root: /home/huhao/adv_ir
+
+latest_changes:
+1. switched haze airlight to fixed non-trainable input
+- file: /home/huhao/adv_ir/source/degradation.py
+- changes:
+  - removed airlight_min / airlight_max bound arguments
+  - airlight changed from nn.Parameter to registered buffer
+  - forward now uses fixed airlight directly
+
+2. updated demo stats for fixed airlight
+- file: /home/huhao/adv_ir/source/demo.py
+- removed bound-related stats fields and kept actual airlight values
+
+date: 2026-03-16
+workspace_root: /home/huhao/adv_ir
+
+latest_changes:
+1. added unified controller module
+- file: /home/huhao/adv_ir/source/degradation.py
+- new class: noise_rain_haze_degradation
+- features:
+  - owns noise_degradation / rain_degradation / haze_degradation submodules
+  - supports fixed / range-pair / discrete sampling specs
+  - reset samples enable flags, sampled params, and current execution order
+  - rain/haze random order, noise always last
+  - forward returns only final degraded image
+  - separate regularization and state query interfaces
+
+2. added minimal controller demo
+- file: /home/huhao/adv_ir/source/demo.py
+- new entry: run_noise_rain_haze_controller_demo()
+- demonstrates config sampling specs, reset_parameters, forward, state output, and regularization output
+
+validation:
+- command: conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/demo.py
+- output: controller_state, output_shape, regularization_items, and generated_files in /home/huhao/adv_ir/tmp_demo
+
+date: 2026-03-16
+workspace_root: /home/huhao/adv_ir
+
+latest_changes:
+1. added pytest test suites for control and degradation modules
+- new files:
+  - /home/huhao/adv_ir/tests/conftest.py
+  - /home/huhao/adv_ir/tests/test_control_map.py
+  - /home/huhao/adv_ir/tests/test_degradations.py
+- covered modules:
+  - control_map / control_map_router
+  - noise_degradation / rain_degradation / haze_degradation / noise_rain_haze_degradation
+
+2. test adjustments after first run
+- fixed one assertion style issue in uniform range bound check
+- fixed one invalid-input test case to ensure real 3D input shape
+
+validation:
+- command: conda run -n advir --no-capture-output pytest -q tests/test_control_map.py tests/test_degradations.py
+- result: 25 passed
+- command: conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/demo.py
+- output: controller demo files regenerated in /home/huhao/adv_ir/tmp_demo
+
+date: 2026-03-16
+workspace_root: /home/huhao/adv_ir
+
+latest_changes:
+1. extracted rain streak layer dataset from rainTrain_train manifest
+- source list: /home/huhao/adv_ir/PromptIR/data_dir/rainy/rainTrain_train.txt
+- output dir: /home/huhao/adv_ir/dataset/rain/rain13K/degradation
+- pairing rule: map train/input/<name>.jpg to train/target/<name>.jpg by same filename
+- formula: rain_streak = input - target
+- save format: PNG with same stem name under degradation directory
+
+2. handled negative values in rain_streak by clipping
+- strategy: clip_to_zero
+- rationale: keep additive rain component only and avoid non-physical negative intensity
+
+validation:
+- manifest_total: 12341
+- processed: 12341
+- missing_input: 0
+- missing_target: 0
+- images_with_negative_values_before_clip: 12341
+- negative_pixel_count_before_clip: 729563161
+- report_file: /home/huhao/adv_ir/dataset/rain/rain13K/degradation/extraction_report.txt
