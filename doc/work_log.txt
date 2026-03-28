@@ -1,5 +1,42 @@
 work_log
 
+date: 2026-03-26
+workspace_root: /home/huhao/adv_ir
+
+latest_changes:
+1. fixed PromptIR train.py multi-gpu strategy compatibility for Lightning 1.6.5
+- file: /home/huhao/adv_ir/PromptIR/train.py
+- issue:
+  - multi-gpu run failed with KeyError because strategy ddp_find_unused_parameters_true is unavailable in current promptir environment
+- fix:
+  - added runtime strategy selector using StrategyRegistry.available_strategies()
+  - fallback order: ddp_find_unused_parameters_true -> ddp -> ddp_find_unused_parameters_false -> ddp_spawn
+
+date: 2026-03-26
+workspace_root: /home/huhao/adv_ir
+
+latest_changes:
+1. removed standalone demo scripts
+- deleted files:
+  - /home/huhao/adv_ir/source/demo.py
+  - /home/huhao/adv_ir/source/promptir_flow_demo.py
+  - /home/huhao/adv_ir/source/haze_only_gradient_demo.py
+  - /home/huhao/adv_ir/PromptIR/demo.py
+
+2. removed demo-only cross-file dependency
+- file: /home/huhao/adv_ir/source/promptir_flow_tensors.py
+- moved controller construction into current file and removed import from promptir_flow_demo
+- default output_subdir changed from promptir_flow_tensors to promptir_flow
+
+3. renamed attack entrypoints to non-demo names
+- file: /home/huhao/adv_ir/source/promptir_attack.py
+- run_promptir_single_image_attack_demo -> run_promptir_single_image_attack
+- build_demo_rain_haze_max_controller_from_image -> build_rain_haze_max_controller_from_image
+
+4. documentation sync
+- file: /home/huhao/adv_ir/source/doc/module_document.txt
+- removed deleted demo module sections and updated promptir_attack entry naming
+
 date: 2026-03-14
 workspace_root: /home/huhao/adv_ir
 
@@ -103,6 +140,255 @@ validation:
 - output: generated_files list under /home/huhao/adv_ir/tmp_demo
 
 date: 2026-03-16
+
+date: 2026-03-17
+workspace_root: /home/huhao/adv_ir
+
+latest_changes:
+1. optimized replacement-mode compute path in train_expairs
+- file: /home/huhao/adv_ir/PromptIR/train_expairs.py
+- behavior:
+  - for net(target)-target selected samples, no net(input) forward is computed
+  - branch forwards are now evaluated only on their selected subsets:
+    - input mode: net(input)
+    - target mode: net(target)
+    - mm-input mode: net(net(input))
+
+validation:
+- syntax check:
+  - conda run -n promptir --no-capture-output python -m py_compile train_expairs.py
+- training smoke:
+  - conda run -n promptir --no-capture-output python train_expairs.py --de_type denoise_15 --epochs 1 --batch_size 2 --accumulate_grad_batches 1 --lr 2e-4 --patch_size 128 --num_workers 0 --num_gpus 0 --degradation_size 16 --ckpt_dir /home/huhao/adv_ir/tmp_demo/train_ckpt_expairs_replace_smoke2 --wblogger none
+  - observed: epoch 0 completed successfully
+
+latest_changes:
+1. updated train_expairs to per-sample replacement policy with fixed batch cardinality
+- file: /home/huhao/adv_ir/PromptIR/train_expairs.py
+- behavior:
+  - each sample now selects exactly one mode by probability:
+    - 80%: net(input)-target
+    - 10%: net(target)-target
+    - 10%: net(net(input))-target
+  - avoids additive extra-branch sample inflation inside one batch
+  - train_effective_samples is fixed to batch_size each step
+
+validation:
+- syntax check:
+  - conda run -n promptir --no-capture-output python -m py_compile train_expairs.py
+- training smoke:
+  - conda run -n promptir --no-capture-output python train_expairs.py --de_type denoise_15 --epochs 1 --batch_size 2 --accumulate_grad_batches 1 --lr 2e-4 --patch_size 128 --num_workers 0 --num_gpus 0 --degradation_size 16 --ckpt_dir /home/huhao/adv_ir/tmp_demo/train_ckpt_expairs_replace_smoke --wblogger none
+  - observed: epoch 0 completed successfully
+
+latest_changes:
+1. corrected extra-branch forward depth in train_expairs
+- file: /home/huhao/adv_ir/PromptIR/train_expairs.py
+- behavior change:
+  - base branch stays as M(input) supervised by target
+  - target branch now supervises M(target) directly (single net call for this branch)
+  - mm-input branch now supervises M(M(input)) directly (two-layer net path)
+  - removed previous pattern that effectively added an extra restoration call and made branch depth look like 3 calls
+
+validation:
+- syntax check:
+  - conda run -n promptir --no-capture-output python -m py_compile train_expairs.py
+- functional check:
+  - conda run -n promptir --no-capture-output python - <<'PY' ... PromptIRExtraPairModel(p=1.0,1.0) training_step ... PY
+  - observed: training_step runs successfully with updated two-layer formulation
+
+latest_changes:
+1. changed train_expairs extra branches from per-sample trigger to per-batch trigger
+- file: /home/huhao/adv_ir/PromptIR/train_expairs.py
+- behavior change:
+  - target-M(target) branch now triggers once per batch with probability p_target_m_target
+  - target-M(M(input)) branch now triggers once per batch with probability p_target_mm_input
+  - when triggered, branch uses full current batch and adds batch_size to effective_sample_count
+
+validation:
+- syntax check:
+  - conda run -n promptir --no-capture-output python -m py_compile train_expairs.py
+- functional check:
+  - conda run -n promptir --no-capture-output python - <<'PY' ... PromptIRExtraPairModel(p=1.0,1.0) training_step ... PY
+  - observed: training_step runs successfully with batch-level branch path
+
+latest_changes:
+1. fixed PromptIR train_expairs.py strategy compatibility for Lightning 1.6.5
+- file: /home/huhao/adv_ir/PromptIR/train_expairs.py
+- issue:
+  - multi-gpu run failed because strategy ddp_find_unused_parameters_true is unavailable in promptir env
+- fix:
+  - added runtime strategy selector using StrategyRegistry.available_strategies()
+  - fallback order: ddp_find_unused_parameters_true -> ddp -> ddp_find_unused_parameters_false -> ddp_spawn
+
+2. validated small-scale training can run correctly
+- cpu smoke command:
+  - conda run -n promptir --no-capture-output python train_expairs.py --de_type denoise_15 --epochs 1 --batch_size 2 --accumulate_grad_batches 1 --lr 2e-4 --patch_size 128 --num_workers 0 --num_gpus 0 --degradation_size 16 --ckpt_dir /home/huhao/adv_ir/tmp_demo/train_ckpt_expairs_smoke --wblogger none
+- multi-gpu smoke command:
+  - conda run -n promptir --no-capture-output python train_expairs.py --de_type denoise_15 --epochs 1 --batch_size 2 --accumulate_grad_batches 1 --lr 2e-4 --patch_size 128 --num_workers 0 --num_gpus 2 --degradation_size 16 --ckpt_dir /home/huhao/adv_ir/tmp_demo/train_ckpt_expairs_smoke_gpu2 --wblogger none
+- observed:
+  - selected strategy printed as ddp on 2-gpu run
+  - distributed initialization succeeded and epoch 0 completed
+
+latest_changes:
+1. added a new non-adv PromptIR training program with extra pair sampling
+- file: /home/huhao/adv_ir/source/promptir_extra_pairs_training.py
+- behavior:
+  - keeps original train data pipeline without adversarial training
+  - adds two extra sample branches in training_step:
+    - p=10% target-M(target): use M(target) as degraded input and target as supervision
+    - p=10% target-M(M(input)): use M(M(input)) as degraded input and target as supervision
+  - uses weighted loss by effective sample count to match added sample semantics
+  - preserves optimizer/scheduler/validation behavior aligned with PromptIR/train.py
+
+2. validation and demo artifacts
+- syntax check:
+  - conda run -n promptir --no-capture-output python -m py_compile /home/huhao/adv_ir/source/promptir_extra_pairs_training.py
+- minimal functional demo:
+  - conda run -n promptir --no-capture-output python - <<'PY' ... training_step smoke run ... PY
+  - output: /home/huhao/adv_ir/tmp_demo/promptir_extra_pairs_training_demo.json
+
+latest_changes:
+1. corrected delta definition in PromptIR test analysis outputs
+- file: /home/huhao/adv_ir/PromptIR/test.py
+- behavior:
+  - removed sorted-adjacent gap definition
+  - now computes fixed pairwise deltas requested by user:
+    - M(input) - input
+    - M(M(input)) - M(input)
+  - applied to both PSNR and SSIM in csv/json/plots/wandb table
+
+validation:
+- command: cd /home/huhao/adv_ir/PromptIR && conda run -n promptir --no-capture-output python test.py --mode 3 --data_split val --num_workers 0 --max_samples 4 --device cpu --output_path /home/huhao/adv_ir/tmp_demo/promptir_test_cpu --ckpt_name /home/huhao/adv_ir/PromptIR/train_ckpt_8192/epoch=127-step=229376.ckpt --disable_wandb
+- observed:
+  - output plots renamed to *_pair_delta_distribution.png
+  - metrics_per_sample.csv fields include:
+    - psnr_delta_m_input_minus_input
+    - psnr_delta_mm_input_minus_m_input
+    - ssim_delta_m_input_minus_input
+    - ssim_delta_mm_input_minus_m_input
+
+latest_changes:
+1. fixed wandb KeyError for non-task summary entries in PromptIR test
+- file: /home/huhao/adv_ir/PromptIR/test.py
+- behavior:
+  - wandb logging now skips summary nodes without task schema (e.g., ranking_counts)
+  - adds guarded logging with try/except to avoid breaking evaluation on wandb-side failures
+  - uploads all generated plot png files into wandb logs/artifact
+
+validation:
+- command: cd /home/huhao/adv_ir/PromptIR && WANDB_MODE=offline conda run -n promptir --no-capture-output python test.py --mode 3 --data_split val --num_workers 0 --max_samples 3 --device cpu --output_path /home/huhao/adv_ir/tmp_demo/promptir_test_cpu --ckpt_name /home/huhao/adv_ir/PromptIR/train_ckpt_8192/epoch=127-step=229376.ckpt
+- observed:
+  - wandb run completed successfully in offline mode
+  - no KeyError on summary logging
+  - summary metrics and ranking metrics were logged
+
+latest_changes:
+1. extended PromptIR test metrics with multi-path restoration comparisons
+- file: /home/huhao/adv_ir/PromptIR/test.py
+- behavior:
+  - per sample now computes:
+    - input vs target
+    - M(input) vs target
+    - M(target) vs target
+    - M(M(input)) vs target
+  - PSNR and SSIM statistics are saved for each path
+
+2. added similarity ranking frequency counts and per-task ranking counts
+- file: /home/huhao/adv_ir/PromptIR/test.py
+- behavior:
+  - ranks [input, M(input), M(M(input))] by similarity to target
+  - counts ranking order occurrences for PSNR and SSIM
+  - stores overall and task-wise ranking frequencies in metrics_summary.json
+
+3. added adjacent-gap distribution visualization for sorted similarity
+- file: /home/huhao/adv_ir/PromptIR/test.py
+- behavior:
+  - computes best-second and second-third gaps from sorted similarities
+  - saves per-task and overall gap histograms for PSNR and SSIM
+
+validation:
+- command: cd /home/huhao/adv_ir/PromptIR && conda run -n promptir --no-capture-output python test.py --mode 3 --data_split val --num_workers 0 --max_samples 4 --device cpu --output_path /home/huhao/adv_ir/tmp_demo/promptir_test_cpu --ckpt_name /home/huhao/adv_ir/PromptIR/train_ckpt_8192/epoch=127-step=229376.ckpt --disable_wandb
+- observed:
+  - run completed successfully and produced multi-path stats
+  - metrics_summary.json includes ranking_counts and ranking_counts_by_task
+  - plot outputs include:
+    - overall_psnr_adjacent_gap_distribution.png
+    - overall_ssim_adjacent_gap_distribution.png
+    - overall_input_distribution.png
+    - overall_m_input_distribution.png
+    - overall_m_target_distribution.png
+    - overall_mm_input_distribution.png
+
+latest_changes:
+1. updated PromptIR runtime environment rule for PromptIR cwd
+- file: /home/huhao/adv_ir/source/doc/agent_rule.txt
+- behavior:
+  - keeps advir as default environment
+  - adds PromptIR cwd exception: use promptir environment for python commands under /home/huhao/adv_ir/PromptIR
+
+2. added GPU and multi-GPU evaluation support to PromptIR test script
+- file: /home/huhao/adv_ir/PromptIR/test.py
+- behavior:
+  - new args: --device {cpu,cuda}, --num_gpus
+  - default remains cpu
+  - when cuda and num_gpus > 1, inference uses torch.nn.DataParallel
+
+3. added W&B reporting for evaluation metrics and outputs
+- file: /home/huhao/adv_ir/PromptIR/test.py
+- behavior:
+  - default project: promptir_test via --wandb_project
+  - optional run name: --wandb_run_name
+  - disable switch: --disable_wandb
+  - logs summary metrics, per-sample table, distribution plots, and result artifacts
+
+4. improved checkpoint loading compatibility and basename resolution
+- file: /home/huhao/adv_ir/PromptIR/test.py
+- behavior:
+  - supports basename checkpoint input by searching ckpt/train_ckpt/train_ckpt_8192/train_ckpt_adv50
+  - handles torch weights_only incompatibility by fallback load
+
+validation:
+- command: cd /home/huhao/adv_ir/PromptIR && conda run -n promptir --no-capture-output python test.py --mode 3 --data_split val --num_workers 0 --max_samples 4 --device cpu --output_path /home/huhao/adv_ir/tmp_demo/promptir_test_cpu --ckpt_name epoch=127-step=229376.ckpt --disable_wandb
+- observed:
+  - cpu run completed successfully
+  - basename checkpoint resolved to /home/huhao/adv_ir/PromptIR/train_ckpt_8192/epoch=127-step=229376.ckpt
+  - outputs saved under /home/huhao/adv_ir/tmp_demo/promptir_test_cpu
+
+- command: cd /home/huhao/adv_ir/PromptIR && WANDB_MODE=offline conda run -n promptir --no-capture-output python test.py --mode 0 --data_split val --num_workers 0 --max_samples 2 --device cpu --output_path /home/huhao/adv_ir/tmp_demo/promptir_test_cpu_wandb --ckpt_name epoch=127-step=229376.ckpt --wandb_project promptir_test
+- observed:
+  - wandb initialized in offline mode and logged metrics/artifacts successfully
+  - offline run path emitted by wandb for optional later sync
+
+latest_changes:
+1. rewrote PromptIR test pipeline to align with train split manifests
+- file: /home/huhao/adv_ir/PromptIR/test.py
+- behavior:
+  - uses PromptTrainDataset with data_split in {train, val, test}
+  - mode-based de_type selection matches train task space
+  - supports absolute checkpoint path for --ckpt_name
+  - path normalization allows launching from workspace root
+
+2. enforced cpu-only evaluation and added per-sample metric exports
+- file: /home/huhao/adv_ir/PromptIR/test.py
+- behavior:
+  - evaluation device fixed to cpu
+  - saves metrics_per_sample.csv and metrics_summary.json
+  - summary includes count/mean/std/min/p25/median/p75/max for PSNR and SSIM
+
+3. added metric distribution visualization outputs
+- file: /home/huhao/adv_ir/PromptIR/test.py
+- behavior:
+  - saves histogram plots for PSNR and SSIM per task and overall
+  - output directory defaults to /home/huhao/adv_ir/tmp_demo/promptir_test_cpu
+
+validation:
+- command: cd /home/huhao/adv_ir && rm -rf tmp_demo && mkdir -p tmp_demo && conda run -n advir --no-capture-output python /home/huhao/adv_ir/PromptIR/test.py --mode 3 --data_split val --num_workers 0 --max_samples 8 --output_path /home/huhao/adv_ir/tmp_demo/promptir_test_cpu --ckpt_name /home/huhao/adv_ir/PromptIR/train_ckpt_8192/epoch=127-step=229376.ckpt
+- observed:
+  - script runs on cpu and evaluates 8 samples in smoke test
+  - generated files:
+    - /home/huhao/adv_ir/tmp_demo/promptir_test_cpu/metrics_per_sample.csv
+    - /home/huhao/adv_ir/tmp_demo/promptir_test_cpu/metrics_summary.json
+    - /home/huhao/adv_ir/tmp_demo/promptir_test_cpu/plots/denoise_15_distribution.png
+    - /home/huhao/adv_ir/tmp_demo/promptir_test_cpu/plots/overall_distribution.png
 workspace_root: /home/huhao/adv_ir
 
 latest_changes:
@@ -169,6 +455,30 @@ latest_changes:
   - /home/huhao/adv_ir/tests/conftest.py
   - /home/huhao/adv_ir/tests/test_control_map.py
   - /home/huhao/adv_ir/tests/test_degradations.py
+
+date: 2026-03-23
+workspace_root: /home/huhao/adv_ir
+
+latest_changes:
+1. added haze-only gradient visualization demo with uniform initialization
+- file: /home/huhao/adv_ir/source/haze_only_gradient_demo.py
+- behavior:
+  - resets /home/huhao/adv_ir/tmp_demo before run
+  - loads one real RESIDE clear-depth pair
+  - builds haze_degradation only with ControlMap constant initialization
+  - runs several gradient steps on haze control map parameter
+  - saves initial/final control map and corresponding haze images
+  - saves beta/transmission maps and objective curves
+
+2. updated documentation index
+- file: /home/huhao/adv_ir/source/doc/module_document.txt
+- added section: module haze_only_gradient_demo
+
+validation:
+- command: conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/haze_only_gradient_demo.py --steps 8 --lr 0.05 --lambda_reg 0.05 --beta_mean 0.12 --max_side 256
+- observed:
+  - demo completed successfully
+  - key outputs generated under /home/huhao/adv_ir/tmp_demo/haze_only_gradient_demo
 - covered modules:
   - control_map / control_map_router
   - noise_degradation / rain_degradation / haze_degradation / noise_rain_haze_degradation
@@ -182,3 +492,582 @@ validation:
 - result: 25 passed
 - command: conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/demo.py
 - output: controller demo files regenerated in /home/huhao/adv_ir/tmp_demo
+
+date: 2026-03-16
+workspace_root: /home/huhao/adv_ir
+
+latest_changes:
+1. added PromptIR single-image inner-loop attack module
+- new file: /home/huhao/adv_ir/source/promptir_attack.py
+- key features:
+  - PromptIR checkpoint loading from /home/huhao/adv_ir/PromptIR/train_ckpt_8192/epoch=31-step=57344.ckpt
+  - PromptIR frozen (eval + requires_grad=False)
+  - differentiable loop: clean -> degradation_controller -> PromptIR -> restored
+  - attack objective: maximize task_loss - lambda_reg * reg_loss (implemented via minimizing negative objective)
+  - saves original/target/initial/final degraded and restored images, logs, and optional rain/haze maps
+
+2. extended degradation controller reset behavior
+- file: /home/huhao/adv_ir/source/degradation.py
+- class: noise_rain_haze_degradation
+- added:
+  - reset_parameters(randomize_active_subset=True, enable_count_probs=(0.5, 0.4, 0.1))
+  - random enable-count sampling for 1/2/3 degradations
+  - noise always kept at the end of order when enabled
+  - rain/haze random order when both are enabled
+  - get_current_enabled() and get_current_order()
+
+3. dependency installation for PromptIR import
+- command: conda run -n advir --no-capture-output pip install einops
+
+validation:
+- command: conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/promptir_attack.py --num_steps 6 --step_size 0.03 --lambda_reg 0.05 --rain_topk 3 --device cpu --max_side 256
+- observed:
+  - promptir_frozen=True
+  - current_enabled=['haze', 'noise']
+  - current_order=['haze', 'noise']
+  - initial_task_loss=0.0749918818
+  - final_task_loss=0.0766199902
+  - output_shape=(1, 3, 192, 256)
+  - selection_rule_stats ratio_by_num={1: 0.478, 2: 0.432, 3: 0.09}
+  - noise_not_last_violations=0
+
+- command: conda run -n advir --no-capture-output python - <<'PY' ... (rain+haze forced gradient check)
+- observed:
+  - enabled=['rain', 'haze']
+  - order=['haze', 'rain']
+  - haze_low_res_param_grad_norm and rain_router_map0_grad_norm are non-zero during optimization steps
+
+latest_demo_outputs:
+- /home/huhao/adv_ir/tmp_demo/promptir_attack/original.png
+- /home/huhao/adv_ir/tmp_demo/promptir_attack/target.png
+- /home/huhao/adv_ir/tmp_demo/promptir_attack/initial_degraded.png
+- /home/huhao/adv_ir/tmp_demo/promptir_attack/worst_degraded.png
+- /home/huhao/adv_ir/tmp_demo/promptir_attack/initial_restored.png
+- /home/huhao/adv_ir/tmp_demo/promptir_attack/worst_restored.png
+- /home/huhao/adv_ir/tmp_demo/promptir_attack/attack_log.json
+- /home/huhao/adv_ir/tmp_demo/promptir_attack/attack_log.txt
+- /home/huhao/adv_ir/tmp_demo/promptir_attack/attack_state.json
+- /home/huhao/adv_ir/tmp_demo/promptir_attack/selection_rule_stats.json
+
+date: 2026-03-16
+workspace_root: /home/huhao/adv_ir
+
+latest_changes:
+1. moved random degradation selection out of controller internals
+- file: /home/huhao/adv_ir/source/degradation.py
+- class: noise_rain_haze_degradation
+- behavior change:
+  - reset_parameters now only resets module parameters
+  - active degradation subset and order are fixed at construction time
+  - rain_haze_order constructor arg added: rain_haze / haze_rain
+
+2. attack script now randomizes controller policy before construction
+- file: /home/huhao/adv_ir/source/promptir_attack.py
+- added sampling logic:
+  - sample 1/2/3 active degradations by probability (0.5, 0.4, 0.1)
+  - sample subset from [noise, rain, haze]
+  - sample rain/haze order once
+  - construct controller with fixed enable flags and fixed order
+
+3. added optional multi-gpu support in attack demo
+- file: /home/huhao/adv_ir/source/promptir_attack.py
+- new arg: --num_gpus
+- behavior:
+  - when --device cuda and --num_gpus > 1, PromptIR uses torch.nn.DataParallel
+  - number of used gpus is min(requested, available)
+
+validation:
+- command: conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/promptir_attack.py --num_steps 2 --step_size 0.03 --lambda_reg 0.05 --rain_topk 3 --device cpu --num_gpus 1 --max_side 192
+- observed:
+  - current_enabled fixed in one run (example: ['noise', 'haze'])
+  - current_order fixed in one run (example: ['haze', 'noise'])
+  - promptir_frozen=True
+  - initial_task_loss=0.0753276050
+  - final_task_loss=0.0756477043
+
+date: 2026-03-16
+workspace_root: /home/huhao/adv_ir
+
+latest_changes:
+1. changed haze default beta_std to optional None mode
+- file: /home/huhao/adv_ir/source/degradation.py
+- class: HazeDegradationConfig / haze_degradation
+- behavior:
+  - default beta_std is now None
+  - when beta_std is None, variance control is disabled
+  - beta map uses beta = base_beta + beta_mean (with min clamp)
+  - when beta_std is provided, original normalized std/mean control remains unchanged
+
+2. updated demo compatibility
+- file: /home/huhao/adv_ir/source/demo.py
+- haze beta visualization now supports beta_std=None branch
+
+validation:
+- command: conda run -n advir --no-capture-output python - <<'PY' ... (instantiate haze_degradation with beta_std=None and run forward)
+- observed:
+  - beta_std None
+  - out_shape (1, 3, 32, 32)
+  - forward runs successfully
+
+date: 2026-03-16
+workspace_root: /home/huhao/adv_ir
+
+latest_changes:
+1. fixed promptir attack demo policy to rain+haze with max settings
+- file: /home/huhao/adv_ir/source/promptir_attack.py
+- demo behavior:
+  - always enable rain and haze, disable noise
+  - rain_num_maps fixed to 16
+  - effective rain_topk fixed to 16
+  - haze airlight fixed to (1.0, 1.0, 1.0)
+  - haze beta_mean fixed to sampled-range max (0.5)
+
+validation:
+- command: conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/promptir_attack.py --num_steps 2 --step_size 0.03 --lambda_reg 0.05 --device cpu --num_gpus 1 --max_side 192
+- observed:
+  - current_enabled=['rain', 'haze']
+  - current_order=['rain', 'haze']
+  - demo_fixed_policy=rain+haze_max
+
+date: 2026-03-17
+workspace_root: /home/huhao/adv_ir
+
+latest_changes:
+1. integrated 50% adversarial mixed training for PromptIR
+- file: /home/huhao/adv_ir/PromptIR/train.py
+- behavior:
+  - supports enabling adversarial training by --adv_enable
+  - wraps PromptTrainDataset with promptir_adv_mix_dataset
+  - performs adversarial pool resampling at epoch 0 and every --adv_resample_epochs epochs
+
+2. added adversarial mix dataset module with tqdm resample progress
+- file: /home/huhao/adv_ir/source/promptir_adv_training.py
+- key features:
+  - target adversarial sample count auto-adapts by ratio (default 50%)
+  - uses source/promptir_attack.py search loop to generate adversarial degraded images
+  - enforces haze adversarial generation only when matching depth mat exists
+  - cached sample pairs stored by rank under /home/huhao/adv_ir/tmp_demo/promptir_adv_cache
+
+3. exposed adversarial training options
+- file: /home/huhao/adv_ir/PromptIR/options.py
+- added args:
+  - --adv_enable
+  - --adv_ratio
+  - --adv_resample_epochs
+  - --adv_samples_per_resample
+  - --adv_steps1 --adv_steps2
+  - --adv_step_size --adv_lambda_reg
+  - --adv_rain_topk --adv_max_side
+  - --adv_promptir_ckpt --adv_cache_root --adv_attack_device
+
+4. added new reproducible run script without overwriting original one
+- new file: /home/huhao/adv_ir/PromptIR/run_train_aio_adv50_repro.sh
+- default mode:
+  - 50% adversarial mix
+  - resample every 8 epochs
+  - reuse pretrained PromptIR checkpoint for adversarial generation
+
+date: 2026-03-17
+workspace_root: /home/huhao/adv_ir
+
+latest_changes:
+1. optimized promptir attack output for training-time generation
+- file: /home/huhao/adv_ir/source/promptir_attack.py
+- added controls:
+  - record_history
+  - save_visual_maps
+- training cache generation now can disable heavy history/map outputs
+
+2. switched adversarial resample storage to lightweight pair folders
+- file: /home/huhao/adv_ir/source/promptir_adv_training.py
+- behavior:
+  - each resample call creates one folder: resample_epoch_xxxx
+  - only stores input/*.png and target/*.png
+  - dataset directly reads those paired files for training
+  - no cache index / extra metadata logs
+
+3. removed obsolete cache-reuse CLI switches
+- file: /home/huhao/adv_ir/PromptIR/options.py
+
+date: 2026-03-17
+workspace_root: /home/huhao/adv_ir
+
+latest_changes:
+1. changed adversarial count semantics to match training expectation
+- file: /home/huhao/adv_ir/source/promptir_adv_training.py
+- behavior:
+  - adv_len now defaults to round(base_len * adv_ratio)
+  - with degradation_size=128 and adv_ratio=0.5, adv_len becomes 224
+
+2. changed default adversarial pair path to training data tree
+- files:
+  - /home/huhao/adv_ir/source/promptir_adv_training.py
+  - /home/huhao/adv_ir/PromptIR/options.py
+- default path:
+  - /home/huhao/adv_ir/PromptIR/data/Train/adv_pairs
+
+3. tuned quick repro script for adversarial training check
+- file: /home/huhao/adv_ir/PromptIR/run_train_aio_repro.sh
+- updates:
+  - switched env to advir
+  - enabled adversarial options
+  - enabled --degradation_size 128 quick setup
+  - set adv sample output path explicitly
+
+date: 2026-03-17
+workspace_root: /home/huhao/adv_ir
+
+latest_changes:
+1. restored baseline non-adversarial repro script
+- file: /home/huhao/adv_ir/PromptIR/run_train_aio_repro.sh
+- behavior restored to original baseline training command
+
+2. moved adversarial quick-train parameters into dedicated script
+- file: /home/huhao/adv_ir/PromptIR/run_train_adv50.sh
+- behavior:
+  - uses --degradation_size 128 quick setup
+  - uses --adv_samples_per_resample 224
+  - saves adversarial input/target pairs under /home/huhao/adv_ir/PromptIR/data/Train/adv_pairs
+
+date: 2026-03-17
+workspace_root: /home/huhao/adv_ir
+
+latest_changes:
+1. changed DDP adversarial resampling to main-process-only generation
+- files:
+  - /home/huhao/adv_ir/source/promptir_adv_training.py
+  - /home/huhao/adv_ir/PromptIR/train.py
+- behavior:
+  - only rank 0 generates adversarial samples per resample epoch
+  - other ranks wait and load the same manifest-based sample list
+  - shared output path changed to /home/huhao/adv_ir/PromptIR/data/Train/adv_pairs/shared
+
+2. added manifest-based synchronization artifacts
+- file: /home/huhao/adv_ir/source/promptir_adv_training.py
+- per epoch folder now includes manifest.json to coordinate non-main ranks
+
+date: 2026-03-17
+workspace_root: /home/huhao/adv_ir
+
+latest_changes:
+1. switched adv50 launcher from quick test profile to full training profile
+- file: /home/huhao/adv_ir/PromptIR/run_train_adv50.sh
+- updates:
+  - epochs: 1 -> 128
+  - ckpt_dir: train_ckpt_adv_quick -> train_ckpt_adv50
+  - removed degradation_size=128 and adv_samples_per_resample=224 overrides
+  - attack inner steps: 1/1 -> 4/4
+  - adv_max_side: 128 -> 512
+  - adv_rain_topk: 4 -> 8
+
+date: 2026-03-17
+workspace_root: /home/huhao/adv_ir
+
+latest_changes:
+1. changed DDP adversarial resample from main-only generation to per-rank shard generation
+- file: /home/huhao/adv_ir/source/promptir_adv_training.py
+- behavior:
+  - each rank gets an equal local_target based on total adv target
+  - each rank generates its shard and writes shards/manifest_rank_xxxx.json
+  - rank 0 merges all shard manifests to manifest.json
+  - all ranks load merged manifest for unified training set view
+
+2. validated single-process compatibility after shard refactor
+- command: conda run -n advir --no-capture-output python -m py_compile source/promptir_adv_training.py PromptIR/train.py
+- smoke test: resample_main_process_then_sync(epoch=0, force=True) with small target count
+- observed: manifest_exists=True and manifest_count matches adv_records
+
+date: 2026-03-17
+workspace_root: /home/huhao/adv_ir
+
+latest_changes:
+1. mitigated CUDA OOM during adversarial resampling in training
+- files:
+  - /home/huhao/adv_ir/PromptIR/train.py
+  - /home/huhao/adv_ir/source/promptir_adv_training.py
+  - /home/huhao/adv_ir/PromptIR/run_train_adv50.sh
+- behavior:
+  - removed pre-fit epoch0 adversarial prebuild in main()
+  - on_train_epoch_start now reuses current training PromptIR model for adversarial generation
+  - temporary freeze/unfreeze of training model parameters during resample stage
+  - lowered adv_max_side in run_train_adv50.sh from 512 to 256
+
+date: 2026-03-17
+workspace_root: /home/huhao/adv_ir
+
+latest_changes:
+1. fixed DDP unused-parameter runtime error in multi-GPU training
+- file: /home/huhao/adv_ir/PromptIR/train.py
+- change:
+  - strategy switched from ddp to ddp_find_unused_parameters_true when devices > 1
+- reason:
+  - PromptIR training graph may leave a subset of parameters unused in some steps under DDP
+
+2. fixed Lightning lr_scheduler_step hook signature mismatch
+- file: /home/huhao/adv_ir/PromptIR/train.py
+- change:
+  - lr_scheduler_step(self, scheduler, optimizer_idx, metric=None)
+- reason:
+  - current Lightning call path may omit metric argument, previous signature caused TypeError
+
+3. fixed DistributedSampler assertion caused by runtime dataset length change
+- file: /home/huhao/adv_ir/source/promptir_adv_training.py
+- change:
+  - __len__ now returns stable base_len + adv_len instead of dynamic base_len + len(adv_records)
+- reason:
+  - DDP DistributedSampler expects fixed dataset size during its lifecycle
+  - adversarial records are refreshed at epoch start, so dynamic length caused sampler assert
+
+4. fixed crop crash when adversarial sample side is smaller than patch_size
+- file: /home/huhao/adv_ir/source/promptir_adv_training.py
+- change:
+  - add min-size guard for image/distance tensors before adversarial sample save
+  - add min-size guard for loaded adversarial image pairs before random crop
+- reason:
+  - avoid ValueError: empty range for randrange() in _crop_patch when H/W < patch_size
+  - effective_rain_topk=16
+
+date: 2026-03-16
+workspace_root: /home/huhao/adv_ir
+
+latest_changes:
+1. promptir attack defaults and diagnostics update
+- file: /home/huhao/adv_ir/source/promptir_attack.py
+- changes:
+  - default --num_gpus changed to 2
+  - depth-image match diagnostics added in output (raw size, transpose flag, resize flag)
+  - if depth shape is exactly swapped (W,H), depth is transposed to (H,W) before any resize
+
+2. worst-case selection aligned with adversarial task loss
+- file: /home/huhao/adv_ir/source/promptir_attack.py
+- behavior:
+  - optimization objective remains task_loss - lambda_reg * reg_loss
+  - reported/saved worst result now selected by maximal task_loss
+  - this prevents reporting a lower task loss sample as final worst-case due to regularization tradeoff
+
+validation:
+- command: conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/promptir_attack.py --num_steps 3 --step_size 0.03 --lambda_reg 0.05 --device cpu --max_side 192
+- observed:
+  - num_gpus_requested=2
+  - depth_match_info includes swapped-size detection and matching status
+  - initial_task_loss=0.2654632330, final_task_loss=0.2765264809 (increased)
+
+- command: conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/promptir_attack.py --num_steps 1 --step_size 0.03 --lambda_reg 0.05 --device cpu --max_side 192
+- observed:
+  - depth_match_info={'image_hw': (413, 550), 'depth_raw_hw': (550, 413), 'depth_transposed_to_match': True, 'depth_resized_to_match': False}
+
+date: 2026-03-16
+workspace_root: /home/huhao/adv_ir
+
+latest_changes:
+1. added persistent multi-gpu queue mode for promptir attack
+- file: /home/huhao/adv_ir/source/promptir_attack.py
+- new behavior:
+  - trigger by --queue_mode or --num_samples > 1
+  - spawn one worker process per GPU
+  - each worker loads PromptIR once and processes assigned samples continuously
+  - avoids per-sample run-to-run GPU idle caused by repeated process/model initialization
+  - writes aggregated summary to /home/huhao/adv_ir/tmp_demo/promptir_attack/queue_summary.json
+
+validation:
+- command: conda run -n advir --no-capture-output python -m py_compile /home/huhao/adv_ir/source/promptir_attack.py
+- observed:
+  - compile passes
+
+date: 2026-03-16
+workspace_root: /home/huhao/adv_ir
+
+latest_changes:
+1. switched promptir attack optimization to hierarchical GD
+- file: /home/huhao/adv_ir/source/promptir_attack.py
+- behavior:
+  - outer loop calls PromptIR `steps1` times and freezes outer gradient each round
+  - inner loop updates degradation `steps2` times using surrogate objective with fixed gradient
+  - default changed to steps1=4, steps2=4
+  - `--num_steps` kept as deprecated alias for steps1
+
+2. queue mode adapted to hierarchical args
+- queue workers now pass steps1 and steps2 explicitly
+
+validation:
+- command: conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/promptir_attack.py --device cpu --num_samples 1 --steps1 2 --steps2 2 --max_side 128
+- observed:
+  - promptir_calls=2
+  - script runs end-to-end with hierarchical settings
+
+date: 2026-03-16
+workspace_root: /home/huhao/adv_ir
+
+latest_changes:
+1. fixed rain auto-degradation randomness within one run
+- file: /home/huhao/adv_ir/source/degradation.py
+- class: rain_degradation
+- behavior:
+  - when degraded_list is None, auto-generated rain layers are now cached after first generation
+  - repeated forwards within the same reset reuse the same rain layers (deterministic within one run)
+  - reset_parameters clears cache so next run gets new random rain layers
+
+validation:
+- command: conda run -n advir --no-capture-output python - <<'PY' ... (two forwards before reset, one forward after reset)
+- observed:
+  - max_diff_same_run = 0.0
+  - max_diff_after_reset > 0
+
+date: 2026-03-16
+workspace_root: /home/huhao/adv_ir
+
+latest_changes:
+1. enforced explicit rain candidates input
+- file: /home/huhao/adv_ir/source/degradation.py
+- class: rain_degradation / noise_rain_haze_degradation
+- behavior:
+  - rain_degradation.forward no longer allows degraded_list=None
+  - controller forward now raises clear error if rain is enabled but rain_degraded_list is None
+  - expected workflow: call rain_module.build_and_store_auto_candidates(image) and pass returned list
+
+2. updated demo call site
+- file: /home/huhao/adv_ir/source/demo.py
+- controller demo now explicitly builds rain candidates and passes rain_degraded_list
+
+validation:
+- command: conda run -n advir --no-capture-output python -m py_compile /home/huhao/adv_ir/source/degradation.py /home/huhao/adv_ir/source/demo.py /home/huhao/adv_ir/source/promptir_attack.py
+- observed:
+  - compile passes
+
+date: 2026-03-16
+workspace_root: /home/huhao/adv_ir
+
+latest_changes:
+1. queue mode profiling and throughput-oriented switch for promptir attack
+- file: /home/huhao/adv_ir/source/promptir_attack.py
+- changes:
+  - added queue timing metrics per sample and in queue_summary:
+    - load_prepare_sec
+    - attack_and_optional_save_sec
+    - total_sample_sec
+  - added CLI flag --queue_save_samples
+    - default: False (queue mode does not save per-sample images/logs)
+    - when enabled: saves per-sample visual files under /home/huhao/adv_ir/tmp_demo/promptir_attack/sample_*
+  - queue summary now prints and stores:
+    - avg_total_sample_sec
+    - avg_load_prepare_sec
+    - avg_attack_and_optional_save_sec
+
+2. compatibility fix after rain module API changes
+- file: /home/huhao/adv_ir/source/promptir_attack.py
+- change:
+  - made rain_auto_params extraction robust when rain_degradation has no last_auto_rain_params attribute
+
+validation:
+- command: conda run -n advir --no-capture-output python -m py_compile /home/huhao/adv_ir/source/promptir_attack.py /home/huhao/adv_ir/source/degradation.py /home/huhao/adv_ir/source/demo.py
+- observed:
+  - compile passes
+
+- command: conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/promptir_attack.py --device cuda --num_gpus 2 --num_samples 4 --queue_mode --steps1 4 --steps2 4 --step_size 0.03 --lambda_reg 0.05 --max_side 256 --ckpt /home/huhao/adv_ir/PromptIR/train_ckpt_8192/epoch=63-step=114688.ckpt
+- observed (save_per_sample=False):
+  - avg_total_sample_sec=1.6339
+  - avg_load_prepare_sec=0.0183
+  - avg_attack_and_optional_save_sec=1.6156
+
+- command: conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/promptir_attack.py --device cuda --num_gpus 2 --num_samples 4 --queue_mode --queue_save_samples --steps1 4 --steps2 4 --step_size 0.03 --lambda_reg 0.05 --max_side 256 --ckpt /home/huhao/adv_ir/PromptIR/train_ckpt_8192/epoch=63-step=114688.ckpt
+- observed (save_per_sample=True):
+  - avg_total_sample_sec=7.4253
+  - avg_load_prepare_sec=0.0181
+  - avg_attack_and_optional_save_sec=7.4072
+
+diagnosis_summary:
+- major bottleneck was per-sample visualization saving and associated CPU/I/O path in queue mode
+- queue mode without per-sample saves significantly reduces idle gaps and improves effective throughput
+
+date: 2026-03-16
+workspace_root: /home/huhao/adv_ir
+
+latest_changes:
+1. generated two-image per-lambda visualization demo set for regularization-strength inspection
+- execution mode: queue mode with per-sample visual saving enabled
+- fixed settings:
+  - --device cuda
+  - --num_gpus 2
+  - --num_samples 2
+  - --queue_mode
+  - --queue_save_samples
+  - --steps1 4
+  - --steps2 4
+  - --step_size 0.03
+  - --max_side 256
+  - --seed 123
+  - --ckpt /home/huhao/adv_ir/PromptIR/train_ckpt_8192/epoch=63-step=114688.ckpt
+- lambda_reg sweep:
+  - 0.00, 0.02, 0.05, 0.10, 0.20
+
+run_command_template:
+- conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/promptir_attack.py --device cuda --num_gpus 2 --num_samples 2 --queue_mode --queue_save_samples --steps1 4 --steps2 4 --step_size 0.03 --lambda_reg <lambda> --max_side 256 --seed 123 --ckpt /home/huhao/adv_ir/PromptIR/train_ckpt_8192/epoch=63-step=114688.ckpt
+
+archive_method:
+- because script resets /home/huhao/adv_ir/tmp_demo each run, per-lambda outputs were copied after each run into persistent folder:
+  - /home/huhao/adv_ir/source/tmp_lambda_visual_demo/lambda_<lambda>/
+
+artifacts:
+- root: /home/huhao/adv_ir/source/tmp_lambda_visual_demo
+- subdirs:
+  - lambda_0.00
+  - lambda_0.02
+  - lambda_0.05
+  - lambda_0.10
+  - lambda_0.20
+- each lambda dir contains:
+  - sample_0001 and sample_0002 folders
+  - queue_summary.json
+- each sample folder contains:
+  - original.png
+  - initial_degraded.png
+  - worst_degraded.png
+  - initial_restored.png
+  - worst_restored.png
+  - rain_weight_map_*.png
+  - haze_beta_map.png
+  - haze_transmission_map.png
+  - attack_log.json / attack_log.txt / attack_state.json
+
+key_visual_reading_guide:
+- compare worst_degraded.png across lambda values for perturbation aggressiveness
+- compare worst_restored.png across lambda values for PromptIR robustness under attacked degradations
+- use attack_log.json to cross-check visual trends with task/reg objective metrics
+
+current_conclusion:
+- under default random settings, the currently recommended regularization strength is lambda_reg=0.05
+
+date: 2026-03-22
+workspace_root: /home/huhao/adv_ir
+
+latest_changes:
+1. exposed train_expairs replacement probabilities as CLI options
+- file: /home/huhao/adv_ir/PromptIR/options.py
+- added args:
+  - --p_target_m_target (default 0.1)
+  - --p_target_mm_input (default 0.1)
+
+2. made train_expairs consume probability args from options
+- file: /home/huhao/adv_ir/PromptIR/train_expairs.py
+- behavior:
+  - PromptIRExtraPairModel now reads probabilities from opt.p_target_m_target and opt.p_target_mm_input
+
+3. aligned train_expairs wandb logger switch with train.py
+- file: /home/huhao/adv_ir/PromptIR/train_expairs.py
+- behavior:
+  - wandb is enabled when opt.wblogger is not None
+  - tensorboard is used only when opt.wblogger is None
+
+4. updated launch script with explicit probability args
+- file: /home/huhao/adv_ir/PromptIR/run_train_expairs.sh
+
+validation:
+- command: cd /home/huhao/adv_ir/PromptIR && conda run -n promptir --no-capture-output python -m py_compile train_expairs.py options.py
+- observed:
+  - compile passes
+
+- command: cd /home/huhao/adv_ir && rm -rf tmp_demo && mkdir -p tmp_demo && cd /home/huhao/adv_ir/PromptIR && WANDB_MODE=offline conda run -n promptir --no-capture-output python train_expairs.py --de_type denoise_15 --epochs 1 --batch_size 2 --accumulate_grad_batches 1 --lr 2e-4 --patch_size 128 --num_workers 0 --num_gpus 0 --degradation_size 16 --ckpt_dir /home/huhao/adv_ir/tmp_demo/train_ckpt_expairs_cli_wandb --p_target_m_target 0.2 --p_target_mm_input 0.3
+- observed:
+  - options print includes p_target_m_target=0.2 and p_target_mm_input=0.3
+  - offline wandb run started and completed successfully
+  - epoch 0 finished successfully

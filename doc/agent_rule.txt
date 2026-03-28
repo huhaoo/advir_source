@@ -3,8 +3,8 @@ agent_rule
 1. Project root: /home/huhao/adv_ir.
 2. Reset /home/huhao/adv_ir/tmp_demo before each demo run.
 3. Use snake_case naming for files, functions, variables, and classes.
-4. Prefer conda environment: advir.
-5. Python execution command format: conda run -n advir --no-capture-output ...
+4. Prefer conda environment: advir. Exception: when current working directory is /home/huhao/adv_ir/PromptIR, prefer conda environment: promptir.
+5. Python execution command format: conda run -n advir --no-capture-output ... Exception for PromptIR cwd: conda run -n promptir --no-capture-output ...
 6. Install dependencies via command line only.
 7. Do not modify /home/huhao/adv_ir/NAFNet or /home/huhao/adv_ir/PromptIR unless absolutely required.
 8. New implementation files go under /home/huhao/adv_ir/source.

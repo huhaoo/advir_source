@@ -28,7 +28,7 @@ class HazeDegradationConfig:
     map_config: ControlMapConfig
     airlight_init: float | tuple[float, float, float] = 1.0
     beta_mean: float = 1.0
-    beta_std: float = 0.2
+    beta_std: float | None = None
     min_beta: float = 1e-6
 
 
@@ -94,8 +94,8 @@ def random_degradation_configs_from_image(
                 high_res_width=int(w),
                 interp_mode="bicubic",
                 align_corners=False,
-                lambda_first_order=0.02,
-                lambda_second_order=0.01,
+                lambda_first_order=0.2,
+                lambda_second_order=0.5,
                 init_mode="zeros",
                 init_value=0.0,
                 init_scale=1.0,
@@ -112,11 +112,11 @@ def random_degradation_configs_from_image(
             high_res_width=int(w),
             interp_mode="bicubic",
             align_corners=False,
-            lambda_first_order=0.01,
-            lambda_second_order=0.005,
+            lambda_first_order=0.1,
+            lambda_second_order=0.5,
             init_mode="normal",
             init_value=0.0,
-            init_scale=0.4,
+            init_scale=0.1,
         ),
         airlight_init=airlight_tuple,
         beta_mean=float(beta_mean),
@@ -196,7 +196,6 @@ class rain_degradation(nn.Module):
             raise ValueError(f"auto_rain_angle_jitter must be >= 0, got {auto_rain_angle_jitter}")
         self.num_branches = int(num_branches)
         self.auto_rain_angle_jitter = float(auto_rain_angle_jitter)
-        self.last_auto_rain_params: list[dict[str, float | int]] = []
         self.router = control_map_router(config.router_config)
 
     def reset_parameters(self) -> None:
@@ -272,7 +271,14 @@ class rain_degradation(nn.Module):
         rain = rain.expand(b, c, h, w)
         return (original + rain).clamp(0.0, 1.0)
 
-    def _auto_generate_candidates(self, original: Tensor, expected: int) -> list[Tensor]:
+    def build_and_store_auto_candidates(self, original: Tensor) -> list[Tensor]:
+        """Explicitly generate rain candidates with add_rain() and store them for later forwards."""
+        if not isinstance(original, torch.Tensor):
+            raise ValueError(f"original must be torch.Tensor, got {type(original)!r}")
+        if original.ndim != 4:
+            raise ValueError(f"original must have shape (B, C, H, W), got {tuple(original.shape)}")
+
+        expected = self.num_branches - 1
         base_value = self._sample_uniform(50.0, 100.0)
         base_length = int(round(self._sample_uniform(20.0, 40.0)))
         base_angle = self._sample_uniform(-30.0, 30.0)
@@ -290,21 +296,17 @@ class rain_degradation(nn.Module):
             }
             params.append(p)
             generated.append(self.add_rain(original, value=base_value, length=base_length, angle=angle, width=base_width))
-        self.last_auto_rain_params = params
-        return generated
+
+        return [candidate.detach() for candidate in generated]
 
     def _build_candidate_stack(
         self,
         original: Tensor,
-        degraded_list: list[Tensor] | tuple[Tensor, ...] | None,
+        degraded_list: list[Tensor] | tuple[Tensor, ...],
     ) -> Tensor:
         if not isinstance(original, torch.Tensor): raise ValueError(f"original must be torch.Tensor, got {type(original)!r}")
         if original.ndim != 4: raise ValueError(f"original must have shape (B, C, H, W), got {tuple(original.shape)}")
         expected = self.num_branches - 1
-        if degraded_list is None:
-            degraded_list = self._auto_generate_candidates(original, expected)
-        else:
-            self.last_auto_rain_params = []
         if not isinstance(degraded_list, (list, tuple)):
             raise ValueError(f"degraded_list must be list/tuple of tensors, got {type(degraded_list)!r}")
         if len(degraded_list) != expected: raise ValueError(f"degraded_list length must be {expected}, got {len(degraded_list)}")
@@ -317,7 +319,7 @@ class rain_degradation(nn.Module):
     def forward(
         self,
         original: Tensor,
-        degraded_list: list[Tensor] | tuple[Tensor, ...] | None = None,
+        degraded_list: list[Tensor] | tuple[Tensor, ...],
         topk: int | None = None,
     ) -> Tensor:
         """Return fused image from original + rain candidates."""
@@ -359,13 +361,15 @@ class haze_degradation(nn.Module):
         beta_std = config.beta_std
         min_beta = config.min_beta
         if not isinstance(beta_mean, (int, float)): raise ValueError(f"beta_mean must be numeric, got {type(beta_mean)!r}")
-        if not isinstance(beta_std, (int, float)): raise ValueError(f"beta_std must be numeric, got {type(beta_std)!r}")
+        if beta_std is not None and not isinstance(beta_std, (int, float)):
+            raise ValueError(f"beta_std must be numeric or None, got {type(beta_std)!r}")
         if not isinstance(min_beta, (int, float)): raise ValueError(f"min_beta must be numeric, got {type(min_beta)!r}")
         if float(min_beta) <= 0: raise ValueError(f"min_beta must be > 0, got {min_beta}")
-        if float(beta_std) < 0: raise ValueError(f"beta_std must be >= 0, got {beta_std}")
+        if beta_std is not None and float(beta_std) < 0:
+            raise ValueError(f"beta_std must be >= 0 when provided, got {beta_std}")
 
         self.beta_mean = float(beta_mean)
-        self.beta_std = float(beta_std)
+        self.beta_std = None if beta_std is None else float(beta_std)
         self.min_beta = float(min_beta)
 
         self.beta_map_module = control_map(config.map_config)
@@ -410,6 +414,10 @@ class haze_degradation(nn.Module):
 
     def _compute_beta_map(self) -> Tensor:
         base_beta = self.beta_map_module()
+        if self.beta_std is None:
+            # No variance control branch: center by mean only, without std normalization.
+            centered_beta = base_beta - base_beta.mean()
+            return (centered_beta + self.beta_mean).clamp_min(self.min_beta)
         mean, std = base_beta.mean(), base_beta.std(unbiased=False)
         beta = (base_beta - mean) / (std + 1e-6)
         return (beta * self.beta_std + self.beta_mean).clamp_min(self.min_beta)
@@ -446,6 +454,7 @@ class noise_rain_haze_degradation(nn.Module):
         enable_noise: bool = True,
         enable_rain: bool = True,
         enable_haze: bool = True,
+        rain_haze_order: str = "rain_haze",
     ) -> None:
         super().__init__()
         self._validate_enable_flag(enable_noise, "enable_noise")
@@ -470,6 +479,10 @@ class noise_rain_haze_degradation(nn.Module):
         self.enable_noise = bool(enable_noise)
         self.enable_rain = bool(enable_rain)
         self.enable_haze = bool(enable_haze)
+        if rain_haze_order not in {"rain_haze", "haze_rain"}:
+            raise ValueError(f"rain_haze_order must be 'rain_haze' or 'haze_rain', got {rain_haze_order!r}")
+        self.rain_haze_order = rain_haze_order
+        self.current_enabled: list[str] = []
         self.current_order: list[str] = []
 
         self.reset_parameters()
@@ -479,21 +492,33 @@ class noise_rain_haze_degradation(nn.Module):
         if not isinstance(value, bool):
             raise ValueError(f"{name} must be bool, got {type(value)!r}")
 
-    def _build_execution_order(self) -> list[str]:
-        core_order: list[str] = []
-        if self.enable_rain: core_order.append("rain")
-        if self.enable_haze: core_order.append("haze")
-        if len(core_order) == 2 and bool(torch.randint(0, 2, (1,)).item()):
-            core_order = [core_order[1], core_order[0]]
-        if self.enable_noise: core_order.append("noise")
+    def _get_available_degradations(self) -> list[str]:
+        available: list[str] = []
+        if self.enable_noise:
+            available.append("noise")
+        if self.enable_rain:
+            available.append("rain")
+        if self.enable_haze:
+            available.append("haze")
+        return available
+
+    def _build_fixed_order(self, enabled_subset: list[str]) -> list[str]:
+        core_order = [name for name in enabled_subset if name in {"rain", "haze"}]
+        if len(core_order) == 2:
+            core_order = ["rain", "haze"] if self.rain_haze_order == "rain_haze" else ["haze", "rain"]
+        if "noise" in enabled_subset:
+            core_order.append("noise")
         return core_order
 
-    def reset_parameters(self) -> None:
+    def reset_parameters(
+        self,
+    ) -> None:
         self.noise_module.reset_parameters()
         self.rain_module.reset_parameters()
         self.haze_module.reset_parameters()
 
-        self.current_order = self._build_execution_order()
+        self.current_enabled = self._get_available_degradations()
+        self.current_order = self._build_fixed_order(self.current_enabled)
 
     def forward(
         self,
@@ -511,6 +536,11 @@ class noise_rain_haze_degradation(nn.Module):
                 if distance_map is None: raise ValueError("distance_map is required when haze is enabled")
                 current = self.haze_module(current, distance_map)
             elif name == "rain":
+                if rain_degraded_list is None:
+                    raise ValueError(
+                        "rain_degraded_list must be explicitly provided when rain is enabled; "
+                        "call rain_module.build_and_store_auto_candidates(image) or pass custom candidates"
+                    )
                 current = self.rain_module(current, rain_degraded_list, topk=rain_topk)
             elif name == "noise":
                 current = self.noise_module(current)
@@ -543,8 +573,15 @@ class noise_rain_haze_degradation(nn.Module):
             "enable_noise": self.enable_noise,
             "enable_rain": self.enable_rain,
             "enable_haze": self.enable_haze,
+            "current_enabled": list(self.current_enabled),
             "current_order": list(self.current_order),
             "noise_config": asdict(self.noise_config),
             "rain_config": asdict(self.rain_config),
             "haze_config": asdict(self.haze_config),
         }
+
+    def get_current_enabled(self) -> list[str]:
+        return list(self.current_enabled)
+
+    def get_current_order(self) -> list[str]:
+        return list(self.current_order)
