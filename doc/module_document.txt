@@ -1,382 +1,177 @@
-module_document
+module_document_compact
 
-document_purpose:
-- Structured and compact module index for current and future modules.
-- Each module should use the same section order for easy comparison.
+last_update: 2026-04-08
+workspace_root: /home/huhao/adv_ir
 
-module_template:
+purpose:
+- compact module/script index for fast lookup.
+- keep only currently existing entries and actionable run/output info.
+
+entry_template:
 - module_name
 - location
-- class_name
-- hyperparameters
-- parameter
-- forward_method
-- losses
-- demo
+- kind
+- summary
+- run
 - outputs
 
-modules:
+entries:
 
-### class control_map
-
+### control_map
 module_name: control_map
 location: /home/huhao/adv_ir/source/control_map.py
-class_name: control_map (nn.Module)
+kind: module
+summary: trainable control-map components (control_map / control_map_router) with smoothness regularization.
+run: conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/control_map.py
+outputs: /home/huhao/adv_ir/tmp_demo
 
-hyperparameters:
-- config_dataclass: ControlMapConfig
-- spatial: low_res_height, low_res_width, high_res_height, high_res_width
-- interpolation: interp_mode (nearest/bilinear/bicubic/area), align_corners
-- regularization: lambda_first_order, lambda_second_order
-- initialization: init_mode (zeros/constant/uniform/normal), init_value, init_scale
-
-parameter:
-- name: low_res_param
-- shape: (1, 1, low_res_height, low_res_width)
-- type: nn.Parameter
-- role: learnable low-resolution control field
-
-forward_method:
-- signature: forward() -> Tensor
-- flow: interpolate only
-- output_shape: (1, 1, high_res_height, high_res_width)
-
-losses:
-- first_order_loss: L1 on horizontal and vertical first-order finite differences
-- second_order_loss: L1 on horizontal and vertical second-order finite differences
-- regularization_loss: lambda_first_order * first_order_loss + lambda_second_order * second_order_loss
-- regularization_items: tensor dict with loss_first_order, loss_second_order, loss_total
-
-demo:
-- entry: run_degradation_modules_demo()
-- run_command: conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/control_map.py
-- behavior: prints output shapes for noise/rain/haze degradation modules
-
-outputs:
-- /home/huhao/adv_ir/tmp_demo (reset before demo)
-
-### class control_map_router
-
-module_name: control_map_router
-location: /home/huhao/adv_ir/source/control_map.py
-class_name: control_map_router (nn.Module)
-
-hyperparameters:
-- config_dataclass: ControlMapRouterConfig(map_config=ControlMapConfig)
-- map_count: num_maps
-- spatial: low_res_height, low_res_width, high_res_height, high_res_width
-- interpolation: interp_mode, align_corners
-- regularization: lambda_first_order, lambda_second_order
-- initialization: init_mode, init_value, init_scale
-- routing: temperature
-
-forward_method:
-- signature: forward(inputs, top_k=None) -> Tensor
-- inputs_shape: (B, N, C, H, W)
-- output_shape: (B, C, H, W)
-
-losses:
-- regularization_items: returns loss_first_order, loss_second_order, loss_total
-- regularization_loss: returns scalar total loss
-
-extras:
-- routing_maps(top_k=None, return_logits=False)
-
-### class noise_degradation
-
-module_name: noise_degradation
+### degradation
+module_name: degradation
 location: /home/huhao/adv_ir/source/degradation.py
-class_name: noise_degradation (nn.Module)
+kind: module
+summary: noise/rain/haze degradation operators and regularization interfaces.
+run: imported by training/attack scripts
+outputs: runtime tensors and regularization terms
 
-hyperparameters:
-- config_dataclass: NoiseDegradationConfig
-- image_height, image_width, num_channels, noise_strength
-
-parameter:
-- buffer: noise_map with shape (1, C, H, W), no grad
-
-forward_method:
-- signature: forward(fig) -> Tensor
-- formula: y = clamp(x + noise_strength * noise_map, 0, 1)
-- output_shape: same as input (B, C, H, W)
-
-losses:
-- get_regularization_loss: returns zero tensor
-- get_regularization_items: returns zero dict items
-
-### class rain_degradation
-
-module_name: rain_degradation
-location: /home/huhao/adv_ir/source/degradation.py
-class_name: rain_degradation (nn.Module)
-
-hyperparameters:
-- config_dataclass: RainDegradationConfig
-- router_config: ControlMapRouterConfig
-- auto_rain_angle_jitter
-
-parameter:
-- internal module: control_map_router(num_maps=num_branches)
-
-forward_method:
-- signature: forward(original, degraded_list, topk=None) -> Tensor
-- original_shape: (B, C, H, W)
-- degraded_list_len: must be num_branches - 1
-- degraded_list contract: explicit input only (None is invalid)
-- stack_shape_before_router: (B, N, C, H, W)
-- output_shape: (B, C, H, W)
-
-losses:
-- get_regularization_loss: forwarded from internal router
-- get_regularization_items: forwarded from internal router
-
-extras:
-- add_rain(original, value=None, length=None, angle=None, width=None): synthesize one rain candidate with random defaults
-- build_and_store_auto_candidates(original): explicit helper that generates and returns num_branches-1 detached rain candidates
-- get_weight_maps(topk=None)
-- get_logits()
-
-### class haze_degradation
-
-module_name: haze_degradation
-location: /home/huhao/adv_ir/source/degradation.py
-class_name: haze_degradation (nn.Module)
-
-hyperparameters:
-- config_dataclass: HazeDegradationConfig
-- map_config: ControlMapConfig
-- airlight_init
-- beta_mean, beta_std (optional), min_beta
-
-parameter:
-- internal module: control_map (for spatial beta base)
-- fixed buffer: airlight with shape (1, 1, 1, 1) or (1, C, 1, 1), initialized by airlight_init
-
-forward_method:
-- signature: forward(image, distance_map) -> Tensor
-- image_shape: (B, C, H, W)
-- distance_map_shape: (B, 1, H, W) or (B, C, H, W)
-- formula: t = exp(-beta * d), y = x * t + A * (1 - t)
-- beta map behavior:
-	- when beta_std is provided: normalize base map then apply std/mean control
-	- when beta_std is None: disable variance control and use beta = (base_beta - mean(base_beta)) + beta_mean
-- output_shape: (B, C, H, W)
-
-losses:
-- get_regularization_loss: from internal control_map
-- get_regularization_items: from internal control_map
-
-outputs:
-- /home/huhao/adv_ir/tmp_demo (runtime demos and generated artifacts)
-
-### function random_degradation_configs_from_image
-
-module_name: random_degradation_configs_from_image
-location: /home/huhao/adv_ir/source/degradation.py
-class_name: function
-
-purpose:
-- given one image tensor, sample a valid triplet of Noise/Rain/Haze dataclass configs
-
-input:
-- image shape: (B, C, H, W) or (C, H, W)
-
-sampling_rules:
-- noise_strength in {15, 25, 50} / 255
-- rain router num_maps in {4, 8, 16}
-- haze airlight base in [0.85, 1.0], per-channel jitter +-0.02, channel clamp to [0.85, 1.0]
-- haze beta_mean in [0.1, 0.5]
-- haze beta_std is sampled as beta_mean * (0.05 + 0.25 * U[0,1])
-
-return:
-- (NoiseDegradationConfig, RainDegradationConfig, HazeDegradationConfig)
-
-### notes
-
-- standalone degradation showcase script `/home/huhao/adv_ir/source/demo.py` has been removed
-- use module-level APIs in `degradation.py` directly for integration and validation
-
-### class noise_rain_haze_degradation
-
-module_name: noise_rain_haze_degradation
-location: /home/huhao/adv_ir/source/degradation.py
-class_name: noise_rain_haze_degradation (nn.Module)
-
-purpose:
-- unified controller for noise/rain/haze degradations with explicit enable flags
-
-constructor:
-- noise_config: NoiseDegradationConfig
-- rain_config: RainDegradationConfig
-- haze_config: HazeDegradationConfig
-- enable_noise, enable_rain, enable_haze: bool
-
-reset_behavior:
-- signature: reset_parameters()
-- resets all three submodules
-- keeps active degradation subset and execution order fixed from construction
-- execution order rule:
-	- rain/haze order determined by constructor argument rain_haze_order
-	- noise always last when enabled
-
-construction_support:
-- constructor supports fixed combination via enable_noise / enable_rain / enable_haze
-- constructor supports fixed rain-haze order via rain_haze_order in {rain_haze, haze_rain}
-- random policy should be applied before construction (outside the module)
-
-state_interfaces:
-- get_current_enabled()
-- get_current_order()
-- get_current_state() now includes current_enabled and current_order
-
-forward_method:
-- signature: forward(image, distance_map=None, rain_degraded_list=None, rain_topk=None) -> Tensor
-- returns only degraded image tensor
-- haze requires distance_map
-- rain_degraded_list is required when rain is enabled
-
-regularization:
-- get_regularization_loss
-- get_regularization_items with keys: loss_noise, loss_rain, loss_haze, loss_total
-
-state:
-- get_current_state returns enable flags, current order, and config dicts (noise_config/rain_config/haze_config)
-
-### module promptir_attack
-
+### promptir_attack
 module_name: promptir_attack
 location: /home/huhao/adv_ir/source/promptir_attack.py
-class_name: function module
+kind: module
+summary: optimize haze controller against frozen PromptIR for adversarial inner-loop search.
+run: imported by promptir_adv_training
+outputs: adversarial degraded/restored tensors and logs
 
-purpose:
-- freeze PromptIR and optimize only degradation parameters for single-image inner-loop adversarial degradation search
-
-training_lean_mode:
-- run_single_image_adversarial_degradation_search now supports:
-	- record_history (default True)
-	- save_visual_maps (default True)
-- for training cache generation, recommended settings are:
-	- record_history=False
-	- save_visual_maps=False
-- this avoids storing heavy per-step logs and extra map images
-
-### class promptir_adv_mix_dataset
-
+### promptir_adv_training
 module_name: promptir_adv_training
 location: /home/huhao/adv_ir/source/promptir_adv_training.py
-class_name: promptir_adv_mix_dataset (torch.utils.data.Dataset)
+kind: module
+summary: online adversarial pair generation/cache during PromptIR training.
+run: imported by /home/huhao/adv_ir/PromptIR/adv_train.py
+outputs: /home/huhao/adv_ir/PromptIR/data/Train/adv_pairs/shared/resample_epoch_xxxx
 
-purpose:
-- wrap PromptIR train dataset and add adversarial samples by ratio
-- support periodic adversarial resampling every N epochs
-- guarantee haze adversarial generation only when matched depth mat exists
+### promptir_static_adv_training
+module_name: promptir_static_adv_training
+location: /home/huhao/adv_ir/source/promptir_static_adv_training.py
+kind: module
+summary: PromptIR training on fixed input/target adversarial dataset with configurable mix ratio.
+run: conda run -n promptir --no-capture-output python /home/huhao/adv_ir/source/promptir_static_adv_training.py --de_type dehaze --adv_ratio 0.5 --adv_cache_root /home/huhao/adv_ir/dataset_ours/random_adv_haze --degradation_size 16384 --num_gpus 3
+outputs: checkpoints (--ckpt_dir), training logs
 
-inputs:
-- base_dataset: PromptTrainDataset
-- args fields:
-	- adv_ratio
-	- adv_resample_epochs
-	- adv_steps1, adv_steps2
-	- adv_step_size, adv_lambda_reg
-	- adv_rain_topk
-	- adv_max_side
-	- adv_promptir_ckpt
-	- adv_cache_root
-	- adv_attack_device
-	- adv_samples_per_resample
-
-key_methods:
-- resample_adversarial(epoch, force=False)
-	- regenerate adversarial pool with tqdm progress
-	- target size auto from ratio or fixed by adv_samples_per_resample
-	- for each call, creates one lightweight folder: resample_epoch_xxxx/input and resample_epoch_xxxx/target
-	- training reads only these paired image folders
-- resample_main_process_then_sync(epoch, force=False)
-	- in DDP, each rank generates an equal shard of adversarial samples
-	- each rank writes one shard manifest under shards/
-	- rank 0 merges shard manifests into one global manifest.json
-	- all ranks synchronize and then load the same merged sample list
-- __len__()
-	- returns base_len + adv_len_ready
-- __getitem__(idx)
-	- base branch: returns original PromptTrainDataset sample
-	- adv branch: returns cached adversarial pair with train-time crop/augmentation
-
-policy:
-- adversarial subset avoids noise-only mode
-- if haze is enabled, corresponding RESIDE depth mat is mandatory
-
+### haze_dataset_builder
+module_name: haze_dataset_builder
+location: /home/huhao/adv_ir/source/haze_dataset_builder.py
+kind: script + module
+summary: generate paired haze dataset via density(Igt)->rho and deg(Igt)->Ideg.
+run: conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/haze_dataset_builder.py --n 100 --output_root /home/huhao/adv_ir/tmp_demo/haze_dataset_builder --max_border_crop 16
 outputs:
-- /home/huhao/adv_ir/PromptIR/data/Train/adv_pairs/shared/
-	- resample_epoch_xxxx/input/*.png
-	- resample_epoch_xxxx/target/*.png
-	- resample_epoch_xxxx/shards/manifest_rank_xxxx.json
-	- resample_epoch_xxxx/manifest.json
+- /home/huhao/adv_ir/tmp_demo/haze_dataset_builder/input/*.png
+- /home/huhao/adv_ir/tmp_demo/haze_dataset_builder/target/*.png
+- /home/huhao/adv_ir/tmp_demo/haze_dataset_builder/density/*.png
+- /home/huhao/adv_ir/tmp_demo/haze_dataset_builder/manifest.json
+- /home/huhao/adv_ir/tmp_demo/haze_dataset_builder/summary.json
+notes:
+- saved density images include inline value labels: min/max/mean.
+- density profile is adaptive and monotonic outer->inner.
+- random per-call ranges:
+  - edge inset: [0.02, 0.14]
+  - q_temp: [0.20, 0.80]
+  - notch strength: [0.10, 0.32]
+  - amp_max: [0.30, 0.50]
+- adv helper now supports fixed output mean:
+  - adv(grad, lam1, lam2, size, fixed_output_mean=0.2)
+  - output mean is enforced by additive projection so matrix mean equals fixed_output_mean
+  - optimization style aligned to run_single_image_adversarial_degradation_search:
+    - steps1 is fixed to 1
+    - if grad is tuple/list, uses the first gradient as fixed_grad
+    - no softplus re-parameterization
+    - fixed_grad is centered and rescaled to target std from /home/huhao/adv_ir/source/doc/static.txt
+      (target std = 9.64294260850096e-05)
+    - fixed-mean constraint is applied during inner optimization and final output
 
-key_functions:
-- load_promptir_model(checkpoint_path, device)
-	- loads PromptIR checkpoint from Lightning-format state_dict
-	- strips net.* prefix and loads into PromptIR(decoder=True)
-	- sets eval mode and requires_grad=False for all PromptIR params
-- build_default_controller_from_image(image, enable_count_probs=(0.5, 0.4, 0.1))
-	- samples 1/2/3 active degradations with probability 50%/40%/10%
-	- samples enabled subset before controller construction
-	- samples rain/haze order once before construction
-	- resulting controller uses fixed subset and fixed order during the whole inner-loop
-- run_single_image_adversarial_degradation_search(...)
-	- objective: maximize task_loss - lambda_reg * reg_loss
-	- implementation: hierarchical GD
-	- outer loop calls PromptIR steps1 times to get fixed d(task_loss)/d(x_deg)
-	- inner loop updates degradation steps2 times with fixed outer gradient surrogate
-	- expensive PromptIR call count is controlled by steps1
-	- task_loss: L1(x_hat, target)
-	- reg_loss: degradation_controller.get_regularization_loss()
-	- only degradation controller params are optimized
-- validate_random_selection_rules(...)
-	- checks empirical 1/2/3 selection ratio and ordering constraints
+### haze_dataset_builder_launcher
+module_name: haze_dataset_builder_launcher
+location: /home/huhao/adv_ir/haze_dataset_builder.sh
+kind: shell script
+summary: one-command wrapper for haze_dataset_builder.py with stable defaults and passthrough args.
+run: bash /home/huhao/adv_ir/haze_dataset_builder.sh
+outputs: same as selected --output_root of haze_dataset_builder.py
 
+### promptir_reside_ots_test
+module_name: promptir_reside_ots_test
+location: /home/huhao/adv_ir/source/promptir_reside_ots_test.py
+kind: script
+summary: evaluate PromptIR checkpoints on RESIDE-OTS split and report PSNR/SSIM.
 run:
-- entry: run_promptir_single_image_attack()
-- run_command: conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/promptir_attack.py --num_steps 6 --step_size 0.03 --lambda_reg 0.05 --device cpu --num_gpus 1 --max_side 256
-- run-command (hierarchical): conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/promptir_attack.py --steps1 4 --steps2 4 --step_size 0.03 --lambda_reg 0.05 --device cpu --num_gpus 1 --max_side 256
-- behavior:
-	- resets /home/huhao/adv_ir/tmp_demo before run
-	- loads one RESIDE clear-depth pair
-	- fixed policy uses rain+haze only (noise disabled)
-	- uses max hyperparameters (rain num_maps=16, rain_topk=16, haze beta_mean max, airlight max)
-	- runs inner-loop attack and saves original/initial/final degraded and restored images
-	- saves step-wise logs, active degradation state, and random-rule statistics
-	- supports multi-gpu forward with DataParallel when --device cuda and --num_gpus > 1
+- conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/promptir_reside_ots_test.py --model_path /home/huhao/adv_ir/PromptIR/train_ckpt_adv_haze50/epoch=127-step=524288.ckpt --test_scope test --device cuda --save_restored
+- bash /home/huhao/adv_ir/run_test_promptir_reside_ots.sh /home/huhao/adv_ir/PromptIR/train_ckpt_adv_haze50/epoch=127-step=524288.ckpt test
+outputs: /home/huhao/adv_ir/tmp_demo/promptir_reside_ots_test
 
-queue_mode:
-- entry: run_promptir_multi_image_attack_queue()
-- trigger: --queue_mode or --num_samples > 1
-- behavior:
-	- creates persistent worker processes (one process per GPU)
-	- each worker loads PromptIR checkpoint once and then processes assigned samples sequentially
-	- avoids repeated process startup / CUDA init / checkpoint loading between samples
-	- output root: /home/huhao/adv_ir/tmp_demo/promptir_attack with per-sample subfolders and queue_summary.json
-	- new flag: --queue_save_samples controls whether to save per-sample visual assets in queue mode
-	- default queue behavior keeps --queue_save_samples off to reduce CPU/I/O stalls and improve GPU utilization
-	- queue_summary.json includes timing fields: avg_total_sample_sec / avg_load_prepare_sec / avg_attack_and_optional_save_sec
+### promptir_paired_dataset_test
+module_name: promptir_paired_dataset_test
+location: /home/huhao/adv_ir/source/promptir_paired_dataset_test.py
+kind: script
+summary: evaluate PromptIR checkpoints on generic paired datasets (input/target).
+run:
+- conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/promptir_paired_dataset_test.py --model_path /home/huhao/adv_ir/PromptIR/train_ckpt_dehaze/epoch=127-step=87424.ckpt --dataset_root /home/huhao/adv_ir/dataset_ours/adv_haze_100_advhaze50 --device cuda
+- bash /home/huhao/adv_ir/run_test_promptir_paired_dataset.sh /home/huhao/adv_ir/PromptIR/train_ckpt_dehaze/epoch=127-step=87424.ckpt /home/huhao/adv_ir/dataset_ours/adv_haze_100_advhaze50 cuda
+outputs: /home/huhao/adv_ir/tmp_demo/promptir_paired_dataset_test
 
-regularization_strength_visual_run:
-- purpose: compare lambda_reg effects with image-level visual outputs under fixed attack settings
-- recommended command template:
-	- conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/promptir_attack.py --device cuda --num_gpus 2 --num_samples 2 --queue_mode --queue_save_samples --steps1 4 --steps2 4 --step_size 0.03 --lambda_reg <value> --max_side 256 --seed 123 --ckpt /home/huhao/adv_ir/PromptIR/train_ckpt_8192/epoch=63-step=114688.ckpt
-- recommended lambda set: {0.00, 0.02, 0.05, 0.10, 0.20}
-- per-sample key files for comparison:
-	- worst_degraded.png (gradient ascent worst-case degradation)
-	- worst_restored.png (PromptIR output under worst-case degradation)
-	- attack_log.json (numeric trajectory and final metrics)
-- persistent archived visual path (outside tmp_demo reset): /home/huhao/adv_ir/source/tmp_lambda_visual_demo
-- current recommendation:
-	- under default random settings, use lambda_reg=0.05 as the current balanced choice
+### run_test_promptir_reside_ots
+module_name: run_test_promptir_reside_ots
+location: /home/huhao/adv_ir/run_test_promptir_reside_ots.sh
+kind: shell script
+summary: wrapper launcher for promptir_reside_ots_test.
+run: bash /home/huhao/adv_ir/run_test_promptir_reside_ots.sh <model_path> <scope>
+outputs: /home/huhao/adv_ir/tmp_demo/promptir_reside_ots_test
 
-outputs:
-- /home/huhao/adv_ir/tmp_demo/promptir_attack
+### run_test_promptir_paired_dataset
+module_name: run_test_promptir_paired_dataset
+location: /home/huhao/adv_ir/run_test_promptir_paired_dataset.sh
+kind: shell script
+summary: wrapper launcher for promptir_paired_dataset_test.
+run: bash /home/huhao/adv_ir/run_test_promptir_paired_dataset.sh <model_path> <dataset_root> [device]
+outputs: /home/huhao/adv_ir/tmp_demo/promptir_paired_dataset_test
 
-### removed modules
+### nafnet_reside_ots_test_runner
+module_name: nafnet_reside_ots_test_runner
+location: /home/huhao/adv_ir/source/nafnet_reside_ots_test_runner.py
+kind: script
+summary: build NAFNet test runtime options and launch RESIDE-OTS test.
+run:
+- conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/nafnet_reside_ots_test_runner.py --model_path /path/to/net_g.pth --save_img
+- bash /home/huhao/adv_ir/run_test_nafnet_reside_ots_split.sh /path/to/net_g.pth
+outputs: /home/huhao/adv_ir/tmp_demo/nafnet_reside_ots_test_runner
 
-- `/home/huhao/adv_ir/source/haze_only_gradient_demo.py` has been removed
-- `/home/huhao/adv_ir/source/promptir_flow_demo.py` has been removed
+### run_test_nafnet_reside_ots_split
+module_name: run_test_nafnet_reside_ots_split
+location: /home/huhao/adv_ir/run_test_nafnet_reside_ots_split.sh
+kind: shell script
+summary: wrapper launcher for nafnet_reside_ots_test_runner.
+run: bash /home/huhao/adv_ir/run_test_nafnet_reside_ots_split.sh /path/to/net_g.pth
+outputs: /home/huhao/adv_ir/tmp_demo/nafnet_reside_ots_test_runner
+
+### run_train_nafnet_reside_ots
+module_name: run_train_nafnet_reside_ots
+location: /home/huhao/adv_ir/source/run_train_nafnet_reside_ots.sh
+kind: shell script
+summary: NAFNet RESIDE-OTS training launcher with multi-GPU and optional W&B sync.
+run:
+- bash /home/huhao/adv_ir/source/run_train_nafnet_reside_ots.sh --num_gpu 3 --wandb_project adv_ir_nafnet_live
+- bash /home/huhao/adv_ir/source/run_train_nafnet_reside_ots.sh --dry_run --output_dir /home/huhao/adv_ir/tmp_demo/nafnet_train_3gpu_wandb_demo
+outputs: /home/huhao/adv_ir/tmp_demo/nafnet_reside_ots_train_launcher
+
+### train_nafnet
+module_name: train_nafnet
+location: /home/huhao/adv_ir/train_nafnet.sh
+kind: shell script
+summary: root-level convenience wrapper for run_train_nafnet_reside_ots.
+run: bash /home/huhao/adv_ir/train_nafnet.sh --wandb_project adv_ir_nafnet_live
+outputs: delegated to run_train_nafnet_reside_ots output_dir
+
+### run_train_promptir_random_adv50
+module_name: run_train_promptir_random_adv50
+location: /home/huhao/adv_ir/PromptIR/run_train_promptir_random_adv50.sh
+kind: shell script
+summary: PromptIR static adversarial training launcher at 50% mix ratio.
+run: bash /home/huhao/adv_ir/PromptIR/run_train_promptir_random_adv50.sh
+outputs: /home/huhao/adv_ir/PromptIR/train_ckpt_random1024_adv_haze

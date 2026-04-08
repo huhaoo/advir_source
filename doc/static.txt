@@ -1,0 +1,35 @@
+date: 2026-04-07
+project_root: /home/huhao/adv_ir
+
+task:
+- Estimate the standard deviation of image gradients used by adversarial training on haze data.
+
+checkpoint:
+- /home/huhao/adv_ir/PromptIR/train_ckpt_dehaze/epoch=127-step=87424.ckpt
+
+dataset:
+- manifest: /home/huhao/adv_ir/PromptIR/data_dir/hazy/hazy_outside_train.txt
+- data root: /home/huhao/adv_ir/dataset
+- valid sampled entries: 512 (random sample from valid haze entries with matched clear image and depth .mat)
+
+method (aligned with adv training gradient definition):
+- device: cuda
+- seed: 123
+- For each sampled entry:
+  1) Load clear image and matched depth map.
+  2) Build haze controller and generate degraded image x_deg.
+  3) Compute PromptIR task loss L1(PromptIR(x_deg), x_clean).
+  4) Compute gradient g = dL/dx_deg.
+- PromptIR gradient mode: tiled forward/backward, patch_size=128, patch_overlap=32.
+
+results:
+- per_image_grad_std_mean: 9.64294260850096e-05
+- per_image_grad_std_std: 5.759387389405851e-05
+- per_image_grad_std_min: 1.15588472908712e-05
+- per_image_grad_std_max: 3.725529822986573e-04
+- pooled_grad_std (all pixels across all samples): 1.0423825934447686e-04
+- per_image_grad_abs_mean_mean: 3.178846359919163e-05
+
+recommended_single_estimate:
+- 9.64e-05 (mean of per-image gradient std)
+- reference: pooled std = 1.04e-04

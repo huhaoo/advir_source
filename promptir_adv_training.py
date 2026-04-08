@@ -1,18 +1,19 @@
 from __future__ import annotations
 
+import json
+import math
 import os
 import random
 import shutil
 import sys
 import time
-import json
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+from PIL import Image
 import torch
 import torch.distributed as dist
-from PIL import Image
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
@@ -23,12 +24,10 @@ if str(PROMPTIR_ROOT) not in sys.path:
 
 from utils.image_utils import crop_img, random_augmentation  # noqa: E402
 
-from degradation import noise_rain_haze_degradation, random_degradation_configs_from_image  # noqa: E402
 from promptir_attack import (  # noqa: E402
     _load_distance_from_mat,
     _load_image_rgb,
-    _resize_to_max_side,
-    load_promptir_model,
+    build_haze_controller_from_image,
     run_single_image_adversarial_degradation_search,
 )
 
@@ -47,16 +46,25 @@ class promptir_adv_mix_dataset(Dataset):
         if self.adv_resample_epochs <= 0:
             raise ValueError(f"adv_resample_epochs must be > 0, got {self.adv_resample_epochs}")
 
-        self.adv_steps1 = int(getattr(args, "adv_steps1", 4))
-        self.adv_steps2 = int(getattr(args, "adv_steps2", 4))
+        self.adv_steps1 = int(getattr(args, "adv_steps1", 2))
+        self.adv_steps2 = int(getattr(args, "adv_steps2", 2))
         self.adv_step_size = float(getattr(args, "adv_step_size", 3e-2))
         self.adv_lambda_reg = float(getattr(args, "adv_lambda_reg", 0.05))
-        self.adv_rain_topk = int(getattr(args, "adv_rain_topk", 8))
-        self.adv_max_side = int(getattr(args, "adv_max_side", 256))
-        self.adv_promptir_ckpt = Path(getattr(args, "adv_promptir_ckpt"))
+        self.adv_promptir_patch_size = int(getattr(args, "adv_promptir_patch_size", getattr(args, "patch_size", 128)))
+        self.adv_promptir_patch_overlap = int(getattr(args, "adv_promptir_patch_overlap", max(0, self.adv_promptir_patch_size // 4)))
+        if self.adv_promptir_patch_size <= 0:
+            raise ValueError(f"adv_promptir_patch_size must be > 0, got {self.adv_promptir_patch_size}")
+        if self.adv_promptir_patch_overlap < 0 or self.adv_promptir_patch_overlap >= self.adv_promptir_patch_size:
+            raise ValueError(
+                "adv_promptir_patch_overlap must be in [0, adv_promptir_patch_size), "
+                f"got overlap={self.adv_promptir_patch_overlap}, patch={self.adv_promptir_patch_size}"
+            )
+
         self.adv_cache_root = Path(getattr(args, "adv_cache_root", PROMPTIR_ROOT / "data" / "Train" / "adv_pairs"))
-        self.adv_attack_device = str(getattr(args, "adv_attack_device", "cuda")).lower()
         self.adv_samples_per_resample = int(getattr(args, "adv_samples_per_resample", 0))
+        self.adv_aug_k = int(getattr(args, "adv_aug_k", 1))
+        if self.adv_aug_k <= 0:
+            raise ValueError(f"adv_aug_k must be >= 1, got {self.adv_aug_k}")
 
         self.base_len = len(self.base_dataset)
         self.adv_len = self._compute_adv_len()
@@ -65,10 +73,27 @@ class promptir_adv_mix_dataset(Dataset):
         self.shared_cache_dir.mkdir(parents=True, exist_ok=True)
         self.adv_records: list[dict[str, Any]] = []
         self._last_resampled_epoch: int | None = None
-        self._promptir_model: torch.nn.Module | None = None
-        self._promptir_device: torch.device | None = None
 
         self.depth_dir = PROJECT_ROOT / "dataset" / "haze" / "reside_ots" / "depth"
+        self.haze_source_indices = self._build_haze_source_indices()
+
+    def _build_haze_source_indices(self) -> list[int]:
+        indices: list[int] = []
+        for i, sample in enumerate(self.base_dataset.sample_ids):
+            try:
+                de_id = int(sample.get("de_type", -1))
+            except Exception:
+                continue
+            if de_id != 4:
+                continue
+            clean_path = self._resolve_dehaze_clean_path(str(sample.get("clean_id", "")))
+            if clean_path is None:
+                continue
+            depth_path = self._resolve_depth_mat(clean_path)
+            if depth_path is None:
+                continue
+            indices.append(i)
+        return indices
 
     def _build_resample_pair_dirs(self, epoch: int) -> tuple[Path, Path, Path]:
         epoch_dir = self.shared_cache_dir / f"resample_epoch_{int(epoch):04d}"
@@ -94,32 +119,33 @@ class promptir_adv_mix_dataset(Dataset):
     def _shard_manifest_path(self, epoch: int, rank: int) -> Path:
         return self._shards_dir(epoch) / f"manifest_rank_{int(rank):04d}.json"
 
-    def _is_main_process(self) -> bool:
-        if dist.is_available() and dist.is_initialized():
-            return dist.get_rank() == 0
-        return int(os.environ.get("LOCAL_RANK", "0")) == 0
-
     def _dist_rank_world(self) -> tuple[int, int]:
         if dist.is_available() and dist.is_initialized():
             return int(dist.get_rank()), int(dist.get_world_size())
         return 0, 1
 
     def _local_target_and_offset(self, total: int, rank: int, world: int) -> tuple[int, int]:
-        base = total // world
-        rem = total % world
-        local_target = base + (1 if rank < rem else 0)
-        start_offset = rank * base + min(rank, rem)
-        return local_target, start_offset
+        if total <= 0:
+            return 0, 0
+        if world <= 0:
+            raise ValueError(f"world must be positive, got {world}")
+        if rank < 0 or rank >= world:
+            raise ValueError(f"rank must be in [0, world), got rank={rank}, world={world}")
 
-    def _wait_for_manifest(self, epoch: int, timeout_sec: int = 3600) -> None:
-        manifest_path = self._manifest_path(epoch)
-        start = time.time()
-        while True:
-            if manifest_path.exists():
-                return
-            if (time.time() - start) > timeout_sec:
-                raise TimeoutError(f"timed out waiting for manifest: {manifest_path}")
-            time.sleep(1.0)
+        # Weighted split for DDP shards: rank0:others = 1:2:2:...
+        weights = [1] + [2] * (world - 1)
+        weight_sum = int(sum(weights))
+        if weight_sum <= 0:
+            raise RuntimeError("invalid shard weights: sum must be positive")
+
+        targets = [int(total * w // weight_sum) for w in weights]
+        remainder = int(total - sum(targets))
+        for idx in range(remainder):
+            targets[idx] += 1
+
+        local_target = int(targets[rank])
+        start_offset = int(sum(targets[:rank]))
+        return local_target, start_offset
 
     def _write_manifest(self, epoch: int, records: list[dict[str, Any]]) -> None:
         manifest_path = self._manifest_path(epoch)
@@ -161,6 +187,7 @@ class promptir_adv_mix_dataset(Dataset):
         manifest_path = self._manifest_path(epoch)
         if not manifest_path.exists():
             return []
+
         obj = json.loads(manifest_path.read_text(encoding="utf-8"))
         records = obj.get("records", [])
         if not isinstance(records, list):
@@ -182,10 +209,98 @@ class promptir_adv_mix_dataset(Dataset):
                     "clean_path": clean_path,
                     "de_id": int(item.get("de_id", 4)),
                     "clean_name": str(item.get("clean_name", Path(clean_path).stem)),
-                    "attack_subset": list(item.get("attack_subset", ["rain", "haze"])),
+                    "attack_subset": ["haze"],
                 }
             )
         return out
+
+    def _compute_adv_len(self) -> int:
+        if self.base_len <= 0:
+            return 0
+        if self.adv_samples_per_resample > 0:
+            return self.adv_samples_per_resample
+        return max(1, int(round(self.base_len * self.adv_ratio)))
+
+    def _resolve_dehaze_clean_path(self, hazy_path: str) -> str | None:
+        if "/haze/reside_ots/haze/" not in hazy_path:
+            return None
+
+        clear_name = hazy_path.replace("/haze/reside_ots/haze/", "/haze/reside_ots/clear/")
+        base_name = os.path.basename(clear_name)
+        stem, ext = os.path.splitext(base_name)
+        clean_stem = stem.split("_")[0]
+        candidate = os.path.join(os.path.dirname(clear_name), clean_stem + ext)
+        if os.path.exists(candidate):
+            return candidate
+        return None
+
+    def _resolve_depth_mat(self, clean_path: str) -> Path | None:
+        mat_path = self.depth_dir / f"{Path(clean_path).stem}.mat"
+        if mat_path.exists():
+            return mat_path
+        return None
+
+    def _tensor_to_uint8_hwc(self, image: torch.Tensor) -> np.ndarray:
+        if image.ndim == 4:
+            image = image[0]
+        if image.ndim != 3:
+            raise ValueError(f"expected image tensor with shape (C,H,W), got {tuple(image.shape)}")
+        image = image.detach().cpu().clamp(0.0, 1.0).permute(1, 2, 0).numpy()
+        return (image * 255.0 + 0.5).astype(np.uint8)
+
+    def _save_rgb_np(self, image: np.ndarray, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        Image.fromarray(image, mode="RGB").save(path)
+
+    def _save_rgb_tensor(self, image: torch.Tensor, path: Path) -> None:
+        self._save_rgb_np(self._tensor_to_uint8_hwc(image), path)
+
+    def _ensure_min_hw_tensor_pair(
+        self,
+        image: torch.Tensor,
+        distance_map: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        patch_size = int(self.base_dataset.args.patch_size)
+        _, _, h, w = image.shape
+        if h >= patch_size and w >= patch_size:
+            return image, distance_map
+
+        new_h = max(h, patch_size)
+        new_w = max(w, patch_size)
+        image = torch.nn.functional.interpolate(image, size=(new_h, new_w), mode="bilinear", align_corners=False)
+        distance_map = torch.nn.functional.interpolate(distance_map, size=(new_h, new_w), mode="bilinear", align_corners=False)
+        return image, distance_map
+
+    def _ensure_min_hw_numpy_pair(
+        self,
+        degrad_img: np.ndarray,
+        clean_img: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        patch_size = int(self.base_dataset.args.patch_size)
+        h, w = degrad_img.shape[:2]
+        if h >= patch_size and w >= patch_size:
+            return degrad_img, clean_img
+
+        new_h = max(h, patch_size)
+        new_w = max(w, patch_size)
+        degrad_img = np.array(Image.fromarray(degrad_img).resize((new_w, new_h), Image.BICUBIC))
+        clean_img = np.array(Image.fromarray(clean_img).resize((new_w, new_h), Image.BICUBIC))
+        return degrad_img, clean_img
+
+    def _expand_with_simple_augmentations(
+        self,
+        adv_np: np.ndarray,
+        clean_np: np.ndarray,
+        k: int,
+    ) -> list[tuple[np.ndarray, np.ndarray]]:
+        if k <= 1:
+            return [(adv_np, clean_np)]
+
+        outputs: list[tuple[np.ndarray, np.ndarray]] = [(adv_np, clean_np)]
+        for _ in range(k - 1):
+            aug_adv, aug_clean = random_augmentation(adv_np, clean_np)
+            outputs.append((aug_adv, aug_clean))
+        return outputs
 
     def resample_main_process_then_sync(
         self,
@@ -228,143 +343,6 @@ class promptir_adv_mix_dataset(Dataset):
         self.adv_records = self._load_records_from_manifest(epoch=epoch)
         self._last_resampled_epoch = epoch
 
-    def _compute_adv_len(self) -> int:
-        if self.base_len <= 0:
-            return 0
-        if self.adv_samples_per_resample > 0:
-            return self.adv_samples_per_resample
-        return max(1, int(round(self.base_len * self.adv_ratio)))
-
-    def _get_attack_device(self) -> torch.device:
-        if self.adv_attack_device == "cuda" and torch.cuda.is_available():
-            local_rank = int(os.environ.get("LOCAL_RANK", "0"))
-            num_cuda = torch.cuda.device_count()
-            device_idx = min(local_rank, max(0, num_cuda - 1))
-            return torch.device(f"cuda:{device_idx}")
-        return torch.device("cpu")
-
-    def _load_promptir_model(self) -> torch.nn.Module:
-        device = self._get_attack_device()
-        if self._promptir_model is None or self._promptir_device != device:
-            self._promptir_model = load_promptir_model(self.adv_promptir_ckpt, device=device)
-            self._promptir_device = device
-        return self._promptir_model
-
-    def _resolve_derain_clean_path(self, rainy_path: str) -> str:
-        if "rainy/" in rainy_path and "rain-" in rainy_path:
-            return rainy_path.split("rainy")[0] + "gt/norain-" + rainy_path.split("rain-")[-1]
-        if "/input/" in rainy_path:
-            return rainy_path.replace("/input/", "/target/")
-        if "input/" in rainy_path:
-            return rainy_path.replace("input/", "target/")
-        raise ValueError(f"Unsupported derain path format: {rainy_path}")
-
-    def _resolve_dehaze_clean_path(self, hazy_path: str) -> str:
-        if "/haze/reside_ots/haze/" in hazy_path:
-            clear_name = hazy_path.replace("/haze/reside_ots/haze/", "/haze/reside_ots/clear/")
-            base_name = os.path.basename(clear_name)
-            stem, ext = os.path.splitext(base_name)
-            clean_stem = stem.split("_")[0]
-            candidate = os.path.join(os.path.dirname(clear_name), clean_stem + ext)
-            if os.path.exists(candidate):
-                return candidate
-        raise FileNotFoundError(f"failed to resolve dehaze clean path from {hazy_path}")
-
-    def _resolve_clean_path(self, sample: dict[str, Any]) -> tuple[str, int, str]:
-        de_id = int(sample["de_type"])
-        source_path = str(sample["clean_id"])
-
-        if de_id < 3:
-            clean_path = source_path
-        elif de_id == 3:
-            clean_path = self._resolve_derain_clean_path(source_path)
-        elif de_id == 4:
-            clean_path = self._resolve_dehaze_clean_path(source_path)
-        else:
-            raise ValueError(f"unsupported de_type for adversarial generation: {de_id}")
-
-        clean_name = Path(clean_path).stem
-        return clean_path, de_id, clean_name
-
-    def _resolve_depth_mat(self, clean_path: str) -> Path | None:
-        mat_path = self.depth_dir / f"{Path(clean_path).stem}.mat"
-        if mat_path.exists():
-            return mat_path
-        return None
-
-    def _sample_attack_subset(self, has_depth: bool) -> list[str]:
-        if has_depth:
-            # Keep haze/rain coverage and avoid degenerating to noise-only.
-            candidate_subsets = [
-                ["noise", "haze"],
-                ["noise", "rain"],
-                ["rain", "haze"],
-                ["noise", "rain", "haze"],
-            ]
-        else:
-            candidate_subsets = [
-                ["noise", "rain"],
-                ["rain"],
-            ]
-        return random.choice(candidate_subsets)
-
-    def _build_controller(self, image: torch.Tensor, enabled_subset: list[str]) -> noise_rain_haze_degradation:
-        noise_cfg, rain_cfg, haze_cfg = random_degradation_configs_from_image(image)
-        rain_haze_order = "haze_rain" if ("rain" in enabled_subset and "haze" in enabled_subset and random.random() > 0.5) else "rain_haze"
-        return noise_rain_haze_degradation(
-            noise_config=noise_cfg,
-            rain_config=rain_cfg,
-            haze_config=haze_cfg,
-            enable_noise=("noise" in enabled_subset),
-            enable_rain=("rain" in enabled_subset),
-            enable_haze=("haze" in enabled_subset),
-            rain_haze_order=rain_haze_order,
-        )
-
-    def _tensor_to_uint8_hwc(self, image: torch.Tensor) -> np.ndarray:
-        if image.ndim == 4:
-            image = image[0]
-        if image.ndim != 3:
-            raise ValueError(f"expected image tensor with shape (C,H,W), got {tuple(image.shape)}")
-        image = image.detach().cpu().clamp(0.0, 1.0).permute(1, 2, 0).numpy()
-        return (image * 255.0 + 0.5).astype(np.uint8)
-
-    def _save_rgb_tensor(self, image: torch.Tensor, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        Image.fromarray(self._tensor_to_uint8_hwc(image), mode="RGB").save(path)
-
-    def _ensure_min_hw_tensor_pair(
-        self,
-        image: torch.Tensor,
-        distance_map: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        patch_size = int(self.base_dataset.args.patch_size)
-        _, _, h, w = image.shape
-        if h >= patch_size and w >= patch_size:
-            return image, distance_map
-
-        new_h = max(h, patch_size)
-        new_w = max(w, patch_size)
-        image = torch.nn.functional.interpolate(image, size=(new_h, new_w), mode="bilinear", align_corners=False)
-        distance_map = torch.nn.functional.interpolate(distance_map, size=(new_h, new_w), mode="bilinear", align_corners=False)
-        return image, distance_map
-
-    def _ensure_min_hw_numpy_pair(
-        self,
-        degrad_img: np.ndarray,
-        clean_img: np.ndarray,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        patch_size = int(self.base_dataset.args.patch_size)
-        h, w = degrad_img.shape[:2]
-        if h >= patch_size and w >= patch_size:
-            return degrad_img, clean_img
-
-        new_h = max(h, patch_size)
-        new_w = max(w, patch_size)
-        degrad_img = np.array(Image.fromarray(degrad_img).resize((new_w, new_h), Image.BICUBIC))
-        clean_img = np.array(Image.fromarray(clean_img).resize((new_w, new_h), Image.BICUBIC))
-        return degrad_img, clean_img
-
     def resample_adversarial(
         self,
         epoch: int,
@@ -392,8 +370,8 @@ class promptir_adv_mix_dataset(Dataset):
         self._last_resampled_epoch = epoch
         self._write_manifest(epoch=epoch, records=new_records)
         print(
-            f"[AdvMix] epoch={epoch} base={self.base_len} adv_target={self.adv_len} adv_ready={len(self.adv_records)} "
-            f"resample_every={self.adv_resample_epochs} sample_root={self._epoch_dir(epoch)}"
+            f"[AdvMixHazeOnly] epoch={epoch} base={self.base_len} adv_target={self.adv_len} adv_ready={len(self.adv_records)} "
+            f"k={self.adv_aug_k} resample_every={self.adv_resample_epochs} sample_root={self._epoch_dir(epoch)}"
         )
 
     def _resample_local_shard(
@@ -410,105 +388,126 @@ class promptir_adv_mix_dataset(Dataset):
         local_target, pair_offset = self._local_target_and_offset(total=self.adv_len, rank=rank, world=world)
         if local_target <= 0:
             return []
-
         if promptir_model_override is None:
-            promptir_model = self._load_promptir_model()
-            device = self._promptir_device if self._promptir_device is not None else torch.device("cpu")
-        else:
-            promptir_model = promptir_model_override
-            try:
-                device = next(promptir_model.parameters()).device
-            except StopIteration:
-                device = torch.device("cpu")
+            raise ValueError("promptir_model_override is required for adversarial resampling")
+        if len(self.haze_source_indices) == 0:
+            print("[AdvMixHazeOnly] no valid dehaze+depth source sample found, skip resample")
+            return []
+
+        # Generate only ceil(local_target / k) adversarial samples, then duplicate by simple augmentation.
+        base_adv_target = int(math.ceil(float(local_target) / float(self.adv_aug_k)))
+
+        promptir_model = promptir_model_override
+        try:
+            device = next(promptir_model.parameters()).device
+        except StopIteration:
+            device = torch.device("cpu")
+
+        promptir_params = list(promptir_model.parameters())
+        original_requires_grad = [bool(param.requires_grad) for param in promptir_params]
+        original_training = bool(promptir_model.training)
+        for param in promptir_params:
+            param.requires_grad = False
+        promptir_model.eval()
 
         local_records: list[dict[str, Any]] = []
-        max_attempts = max(local_target, local_target * 3)
+        produced_base_adv = 0
         attempts = 0
+        max_attempts = max(base_adv_target * 4, 32)
 
         progress = tqdm(total=local_target, desc=f"adv-resample@epoch{epoch}:rank{rank}", leave=False)
-        while len(local_records) < local_target and attempts < max_attempts:
-            attempts += 1
-            src_idx = random.randrange(self.base_len)
-            local_idx = len(local_records)
-            sample = self.base_dataset.sample_ids[src_idx]
-            clean_path, de_id, clean_name = self._resolve_clean_path(sample)
-            if not os.path.exists(clean_path):
-                continue
+        try:
+            while len(local_records) < local_target and produced_base_adv < base_adv_target and attempts < max_attempts:
+                attempts += 1
 
-            image = _load_image_rgb(Path(clean_path))
-            _, _, h, w = image.shape
-            depth_mat = self._resolve_depth_mat(clean_path)
-            has_depth = depth_mat is not None
-            subset = self._sample_attack_subset(has_depth=has_depth)
+                src_idx = random.choice(self.haze_source_indices)
+                sample = self.base_dataset.sample_ids[src_idx]
 
-            if "haze" in subset:
+                clean_path = self._resolve_dehaze_clean_path(str(sample.get("clean_id", "")))
+                if clean_path is None or not os.path.exists(clean_path):
+                    continue
+
+                depth_mat = self._resolve_depth_mat(clean_path)
                 if depth_mat is None:
-                    subset = [x for x in subset if x != "haze"]
-                else:
-                    distance_map, _ = _load_distance_from_mat(depth_mat, (h, w))
+                    continue
+
+                image = _load_image_rgb(Path(clean_path))
+                _, _, h, w = image.shape
+                distance_map, _ = _load_distance_from_mat(depth_mat, (h, w))
+
+                image, distance_map = self._ensure_min_hw_tensor_pair(image, distance_map)
+                target = image.clone()
+
+                image = image.to(device)
+                target = target.to(device)
+                distance_map = distance_map.to(device)
+
+                controller = build_haze_controller_from_image(image)
+                result = run_single_image_adversarial_degradation_search(
+                    image=image,
+                    target=target,
+                    promptir_model=promptir_model,
+                    degradation_controller=controller,
+                    distance_map=distance_map,
+                    steps1=self.adv_steps1,
+                    steps2=self.adv_steps2,
+                    step_size=self.adv_step_size,
+                    lambda_reg=self.adv_lambda_reg,
+                    rain_topk=1,
+                    save_dir=None,
+                    record_history=False,
+                    save_visual_maps=False,
+                    allow_promptir_trainable_params=False,
+                    promptir_patch_size=self.adv_promptir_patch_size,
+                    promptir_patch_overlap=self.adv_promptir_patch_overlap,
+                )
+
+                adv_img = result["worst_degraded"]
+                clean_img = image.detach().cpu()
+
+                adv_np = self._tensor_to_uint8_hwc(adv_img)
+                clean_np = self._tensor_to_uint8_hwc(clean_img)
+                expanded_pairs = self._expand_with_simple_augmentations(adv_np=adv_np, clean_np=clean_np, k=self.adv_aug_k)
+
+                clean_name = Path(clean_path).stem
+                for aug_idx, (aug_adv_np, aug_clean_np) in enumerate(expanded_pairs):
+                    if len(local_records) >= local_target:
+                        break
+                    pair_id = f"{pair_offset + len(local_records):06d}"
+                    adv_path = input_dir / f"{pair_id}.png"
+                    clean_out_path = target_dir / f"{pair_id}.png"
+                    self._save_rgb_np(aug_adv_np, adv_path)
+                    self._save_rgb_np(aug_clean_np, clean_out_path)
+
+                    local_records.append(
+                        {
+                            "degraded_path": str(adv_path),
+                            "clean_path": str(clean_out_path),
+                            "de_id": 4,
+                            "clean_name": clean_name,
+                            "attack_subset": ["haze"],
+                            "aug_index": int(aug_idx),
+                        }
+                    )
+                    progress.update(1)
+
+                produced_base_adv += 1
+        finally:
+            progress.close()
+            for param, req_grad in zip(promptir_params, original_requires_grad):
+                param.requires_grad = req_grad
+            if original_training:
+                promptir_model.train()
             else:
-                distance_map = torch.ones((1, 1, h, w), dtype=image.dtype)
+                promptir_model.eval()
 
-            if "haze" in subset and depth_mat is None:
-                # Skip invalid haze samples without depth map by design.
-                continue
-
-            image, distance_map = _resize_to_max_side(image, distance_map, max_side=self.adv_max_side)
-            image, distance_map = self._ensure_min_hw_tensor_pair(image, distance_map)
-            target = image.clone()
-
-            image = image.to(device)
-            target = target.to(device)
-            distance_map = distance_map.to(device)
-
-            controller = self._build_controller(image=image, enabled_subset=subset)
-            effective_topk = max(1, min(self.adv_rain_topk, controller.rain_module.num_branches))
-            result = run_single_image_adversarial_degradation_search(
-                image=image,
-                target=target,
-                promptir_model=promptir_model,
-                degradation_controller=controller,
-                distance_map=distance_map,
-                steps1=self.adv_steps1,
-                steps2=self.adv_steps2,
-                step_size=self.adv_step_size,
-                lambda_reg=self.adv_lambda_reg,
-                rain_topk=effective_topk,
-                save_dir=None,
-                record_history=False,
-                save_visual_maps=False,
-                allow_promptir_trainable_params=promptir_model_override is not None,
-            )
-
-            adv_img = result["worst_degraded"]
-            clean_img = image.detach().cpu()
-
-            pair_id = f"{pair_offset + local_idx:06d}"
-            adv_path = input_dir / f"{pair_id}.png"
-            clean_out_path = target_dir / f"{pair_id}.png"
-            self._save_rgb_tensor(adv_img, adv_path)
-            self._save_rgb_tensor(clean_img, clean_out_path)
-
-            local_records.append(
-                {
-                    "degraded_path": str(adv_path),
-                    "clean_path": str(clean_out_path),
-                    "de_id": int(de_id),
-                    "clean_name": clean_name,
-                    "attack_subset": subset,
-                }
-            )
-            progress.update(1)
-        progress.close()
         print(
-            f"[AdvMixShard] epoch={epoch} rank={rank}/{world} local_target={local_target} local_ready={len(local_records)} "
-            f"sample_root={epoch_dir}"
+            f"[AdvMixHazeOnlyShard] epoch={epoch} rank={rank}/{world} local_target={local_target} "
+            f"base_adv_target={base_adv_target} base_adv_ready={produced_base_adv} local_ready={len(local_records)}"
         )
         return local_records
 
     def __len__(self) -> int:
-        # Keep dataset length stable for DistributedSampler across all epochs.
-        # Actual adversarial records are refreshed in-place; missing slots fallback in __getitem__.
         return self.base_len + self.adv_len
 
     def _load_adv_pair(self, idx: int) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
@@ -539,5 +538,4 @@ class promptir_adv_mix_dataset(Dataset):
 
         clean_patch = self.base_dataset.toTensor(clean_patch)
         degrad_patch = self.base_dataset.toTensor(degrad_patch)
-
         return [record["clean_name"], int(record["de_id"])], degrad_patch, clean_patch
