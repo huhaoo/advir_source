@@ -169,8 +169,21 @@ def _promptir_task_and_grad_tiled(
     return task_loss, grad.detach(), restored
 
 
-def build_haze_controller_from_image(image: Tensor, beta_mean: float | None = None) -> haze_degradation:
-    _, _, haze_cfg = random_degradation_configs_from_image(image)
+def build_haze_controller_from_image(
+    image: Tensor,
+    beta_mean: float | None = None,
+    interp_mode: str = "bicubic",
+    gaussian_radius: int = 4,
+    gaussian_sigma: float = 1.25,
+    gaussian_extra_cells: int = 2,
+) -> haze_degradation:
+    _, _, haze_cfg = random_degradation_configs_from_image(
+        image,
+        interp_mode=interp_mode,
+        gaussian_radius=gaussian_radius,
+        gaussian_sigma=gaussian_sigma,
+        gaussian_extra_cells=gaussian_extra_cells,
+    )
     if beta_mean is not None:
         haze_cfg.beta_mean = float(beta_mean)
     return haze_degradation(haze_cfg)
@@ -272,6 +285,11 @@ def run_single_image_adversarial_degradation_search(
                 patch_size=promptir_patch_size,
                 patch_overlap=promptir_patch_overlap,
             )
+
+        # Normalize task gradient before propagating it into the degradation controller.
+        # This stabilizes surrogate optimization when image gradients are tiny.
+        grad_std = fixed_grad.detach().float().std(unbiased=False).clamp_min(1e-12)
+        fixed_grad = fixed_grad / grad_std
 
         reg_loss_outer = degradation_controller.get_regularization_loss()
         attack_obj_outer = task_loss_outer - lambda_reg * reg_loss_outer

@@ -50,6 +50,7 @@ class promptir_adv_mix_dataset(Dataset):
         self.adv_steps2 = int(getattr(args, "adv_steps2", 2))
         self.adv_step_size = float(getattr(args, "adv_step_size", 3e-2))
         self.adv_lambda_reg = float(getattr(args, "adv_lambda_reg", 0.05))
+        self.adv_lambda_reg_effective = self.adv_lambda_reg / 1e-4
         self.adv_promptir_patch_size = int(getattr(args, "adv_promptir_patch_size", getattr(args, "patch_size", 128)))
         self.adv_promptir_patch_overlap = int(getattr(args, "adv_promptir_patch_overlap", max(0, self.adv_promptir_patch_size // 4)))
         if self.adv_promptir_patch_size <= 0:
@@ -65,6 +66,22 @@ class promptir_adv_mix_dataset(Dataset):
         self.adv_aug_k = int(getattr(args, "adv_aug_k", 1))
         if self.adv_aug_k <= 0:
             raise ValueError(f"adv_aug_k must be >= 1, got {self.adv_aug_k}")
+        self.adv_map_interp_mode = str(getattr(args, "adv_map_interp_mode", "bicubic")).strip().lower()
+        if self.adv_map_interp_mode not in {"nearest", "bilinear", "bicubic", "area", "gaussian"}:
+            raise ValueError(
+                "adv_map_interp_mode must be one of "
+                "{nearest, bilinear, bicubic, area, gaussian}, "
+                f"got {self.adv_map_interp_mode!r}"
+            )
+        self.adv_gaussian_radius = int(getattr(args, "adv_gaussian_radius", 4))
+        self.adv_gaussian_sigma = float(getattr(args, "adv_gaussian_sigma", 1.25))
+        self.adv_gaussian_extra_cells = int(getattr(args, "adv_gaussian_extra_cells", 2))
+        if self.adv_gaussian_radius <= 0:
+            raise ValueError(f"adv_gaussian_radius must be > 0, got {self.adv_gaussian_radius}")
+        if self.adv_gaussian_sigma <= 0:
+            raise ValueError(f"adv_gaussian_sigma must be > 0, got {self.adv_gaussian_sigma}")
+        if self.adv_gaussian_extra_cells < 0:
+            raise ValueError(f"adv_gaussian_extra_cells must be >= 0, got {self.adv_gaussian_extra_cells}")
 
         self.base_len = len(self.base_dataset)
         self.adv_len = self._compute_adv_len()
@@ -371,7 +388,9 @@ class promptir_adv_mix_dataset(Dataset):
         self._write_manifest(epoch=epoch, records=new_records)
         print(
             f"[AdvMixHazeOnly] epoch={epoch} base={self.base_len} adv_target={self.adv_len} adv_ready={len(self.adv_records)} "
-            f"k={self.adv_aug_k} resample_every={self.adv_resample_epochs} sample_root={self._epoch_dir(epoch)}"
+            f"k={self.adv_aug_k} resample_every={self.adv_resample_epochs} "
+            f"lambda_base={self.adv_lambda_reg:.6g} lambda_effective={self.adv_lambda_reg_effective:.6g} "
+            f"lambda_scale=1e4 sample_root={self._epoch_dir(epoch)}"
         )
 
     def _resample_local_shard(
@@ -442,7 +461,13 @@ class promptir_adv_mix_dataset(Dataset):
                 target = target.to(device)
                 distance_map = distance_map.to(device)
 
-                controller = build_haze_controller_from_image(image)
+                controller = build_haze_controller_from_image(
+                    image,
+                    interp_mode=self.adv_map_interp_mode,
+                    gaussian_radius=self.adv_gaussian_radius,
+                    gaussian_sigma=self.adv_gaussian_sigma,
+                    gaussian_extra_cells=self.adv_gaussian_extra_cells,
+                )
                 result = run_single_image_adversarial_degradation_search(
                     image=image,
                     target=target,
@@ -452,7 +477,7 @@ class promptir_adv_mix_dataset(Dataset):
                     steps1=self.adv_steps1,
                     steps2=self.adv_steps2,
                     step_size=self.adv_step_size,
-                    lambda_reg=self.adv_lambda_reg,
+                    lambda_reg=self.adv_lambda_reg_effective,
                     rain_topk=1,
                     save_dir=None,
                     record_history=False,

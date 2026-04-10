@@ -34,6 +34,10 @@ class HazeDegradationConfig:
 
 def random_degradation_configs_from_image(
     image: Tensor,
+    interp_mode: str = "bicubic",
+    gaussian_radius: int = 4,
+    gaussian_sigma: float = 1.25,
+    gaussian_extra_cells: int = 2,
 ) -> tuple[NoiseDegradationConfig, RainDegradationConfig, HazeDegradationConfig]:
     """Sample random Noise/Rain/Haze config triplet from one input image.
 
@@ -56,6 +60,20 @@ def random_degradation_configs_from_image(
         raise ValueError(f"image must have shape (B, C, H, W) or (C, H, W), got {tuple(image.shape)}")
     if c <= 0 or h <= 0 or w <= 0:
         raise ValueError(f"invalid image shape: (C, H, W)=({c}, {h}, {w})")
+
+    interp_mode = str(interp_mode).strip().lower()
+    if interp_mode not in {"nearest", "bilinear", "bicubic", "area", "gaussian"}:
+        raise ValueError(
+            "interp_mode must be one of "
+            "{nearest, bilinear, bicubic, area, gaussian}, "
+            f"got {interp_mode!r}"
+        )
+    if not isinstance(gaussian_radius, int) or gaussian_radius <= 0:
+        raise ValueError(f"gaussian_radius must be positive int, got {gaussian_radius}")
+    if not isinstance(gaussian_sigma, (int, float)) or float(gaussian_sigma) <= 0:
+        raise ValueError(f"gaussian_sigma must be positive numeric, got {gaussian_sigma}")
+    if not isinstance(gaussian_extra_cells, int) or gaussian_extra_cells < 0:
+        raise ValueError(f"gaussian_extra_cells must be non-negative int, got {gaussian_extra_cells}")
 
     noise_choices = torch.tensor([15.0 / 255.0, 25.0 / 255.0, 50.0 / 255.0], dtype=torch.float32)
     noise_idx = int(torch.randint(0, len(noise_choices), (1,)).item())
@@ -92,8 +110,11 @@ def random_degradation_configs_from_image(
                 low_res_width=rain_lw,
                 high_res_height=int(h),
                 high_res_width=int(w),
-                interp_mode="bicubic",
+                interp_mode=interp_mode,
                 align_corners=False,
+                gaussian_radius=gaussian_radius,
+                gaussian_sigma=gaussian_sigma,
+                gaussian_extra_cells=gaussian_extra_cells,
                 lambda_first_order=0.2,
                 lambda_second_order=0.5,
                 init_mode="zeros",
@@ -110,8 +131,11 @@ def random_degradation_configs_from_image(
             low_res_width=haze_lw,
             high_res_height=int(h),
             high_res_width=int(w),
-            interp_mode="bicubic",
+            interp_mode=interp_mode,
             align_corners=False,
+            gaussian_radius=gaussian_radius,
+            gaussian_sigma=gaussian_sigma,
+            gaussian_extra_cells=gaussian_extra_cells,
             lambda_first_order=0.1,
             lambda_second_order=0.5,
             init_mode="normal",

@@ -21,7 +21,7 @@ PROMPTIR_ROOT = PROJECT_ROOT / "PromptIR"
 if str(PROMPTIR_ROOT) not in sys.path:
     sys.path.insert(0, str(PROMPTIR_ROOT))
 
-from net.model import PromptIR  # noqa: E402
+from net.model import build_promptir_model  # noqa: E402
 from utils.pytorch_ssim import ssim as pytorch_ssim  # noqa: E402
 
 
@@ -88,6 +88,14 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Recursively scan input/target directories.",
     )
+    parser.add_argument("--model_arch", type=str, default="promptir", choices=["nafnet", "promptir"])
+    parser.add_argument("--naf_width", type=int, default=32)
+    parser.add_argument("--naf_middle_blk_num", type=int, default=1)
+    parser.add_argument("--naf_enc_blk_nums", type=int, nargs="+", default=[1, 1, 1, 28])
+    parser.add_argument("--naf_dec_blk_nums", type=int, nargs="+", default=[1, 1, 1, 1])
+    parser.add_argument("--naf_dw_expand", type=int, default=2)
+    parser.add_argument("--naf_ffn_expand", type=int, default=2)
+    parser.add_argument("--naf_dropout", type=float, default=0.0)
     return parser.parse_args()
 
 
@@ -122,7 +130,7 @@ def _pad_to_multiple_of(x: torch.Tensor, multiple: int = 8) -> tuple[torch.Tenso
     return x_pad, (pad_h, pad_w)
 
 
-def _restore_full(model: PromptIR, haze: torch.Tensor) -> torch.Tensor:
+def _restore_full(model: torch.nn.Module, haze: torch.Tensor) -> torch.Tensor:
     _, _, h, w = haze.shape
     haze_pad, _ = _pad_to_multiple_of(haze, multiple=8)
     restored_pad = model(haze_pad)
@@ -145,7 +153,7 @@ def _build_positions(length: int, tile_size: int, step: int) -> list[int]:
     return positions
 
 
-def _restore_with_tiling(model: PromptIR, haze: torch.Tensor, tile_size: int, tile_overlap: int) -> torch.Tensor:
+def _restore_with_tiling(model: torch.nn.Module, haze: torch.Tensor, tile_size: int, tile_overlap: int) -> torch.Tensor:
     if tile_size <= 0:
         return _restore_full(model, haze)
 
@@ -192,7 +200,7 @@ def _distribution(values: list[float]) -> dict[str, float]:
     }
 
 
-def load_promptir_model(checkpoint_path: Path, device: torch.device) -> PromptIR:
+def load_promptir_model(checkpoint_path: Path, device: torch.device, args: argparse.Namespace) -> torch.nn.Module:
     try:
         checkpoint_obj = torch.load(str(checkpoint_path), map_location="cpu", weights_only=True)
     except (TypeError, ValueError, RuntimeError, pickle.UnpicklingError):
@@ -210,12 +218,24 @@ def load_promptir_model(checkpoint_path: Path, device: torch.device) -> PromptIR
     if len(promptir_state) == 0:
         raise ValueError("no 'net.' prefixed keys found in checkpoint state_dict")
 
-    model = PromptIR(decoder=True)
+    model = build_promptir_model(
+        model_arch=args.model_arch,
+        decoder=True,
+        inp_channels=3,
+        out_channels=3,
+        naf_width=int(args.naf_width),
+        naf_middle_blk_num=int(args.naf_middle_blk_num),
+        naf_enc_blk_nums=list(args.naf_enc_blk_nums),
+        naf_dec_blk_nums=list(args.naf_dec_blk_nums),
+        naf_dw_expand=int(args.naf_dw_expand),
+        naf_ffn_expand=int(args.naf_ffn_expand),
+        naf_dropout=float(args.naf_dropout),
+    )
     missing_keys, unexpected_keys = model.load_state_dict(promptir_state, strict=False)
     if len(unexpected_keys) > 0:
-        raise RuntimeError(f"unexpected PromptIR keys while loading checkpoint: {unexpected_keys[:10]}")
+        raise RuntimeError(f"unexpected model keys while loading checkpoint: {unexpected_keys[:10]}")
     if len(missing_keys) > 0:
-        raise RuntimeError(f"missing PromptIR keys while loading checkpoint: {missing_keys[:10]}")
+        raise RuntimeError(f"missing model keys while loading checkpoint: {missing_keys[:10]}")
 
     model = model.to(device)
     model.eval()
@@ -324,7 +344,7 @@ def main() -> None:
     if args.save_restored:
         restored_dir.mkdir(parents=True, exist_ok=True)
 
-    model = load_promptir_model(checkpoint_path=model_path, device=device)
+    model = load_promptir_model(checkpoint_path=model_path, device=device, args=args)
     model_path_text = str(model_path.resolve())
 
     print(f"[Model] {model_path_text}")

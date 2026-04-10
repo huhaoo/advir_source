@@ -1,6 +1,6 @@
 module_document_compact
 
-last_update: 2026-04-08
+last_update: 2026-04-10
 workspace_root: /home/huhao/adv_ir
 
 purpose:
@@ -25,13 +25,39 @@ summary: trainable control-map components (control_map / control_map_router) wit
 run: conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/control_map.py
 outputs: /home/huhao/adv_ir/tmp_demo
 
+### control_map_interpolator
+module_name: control_map_interpolator
+location: /home/huhao/adv_ir/source/control_map_interpolator.py
+kind: module
+summary: unified lowres->highres interpolation backend for control maps; supports bilinear/bicubic/gaussian (plus nearest/area compatibility).
+run: conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/control_map_interpolator.py
+outputs: /home/huhao/adv_ir/tmp_demo
+
+### control_map_interpolator_demo
+module_name: control_map_interpolator_demo
+location: /home/huhao/adv_ir/source/control_map_interpolator_demo.py
+kind: script
+summary: demo and behavior-check for unified interpolation module; validates default bilinear/bicubic equality vs torch and shows gaussian boundary extension effect.
+run: cd /home/huhao/adv_ir && rm -rf tmp_demo && mkdir -p tmp_demo && conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/control_map_interpolator_demo.py --output_root /home/huhao/adv_ir/tmp_demo/control_map_interpolator_demo
+outputs:
+- /home/huhao/adv_ir/tmp_demo/control_map_interpolator_demo/lowres_input.png
+- /home/huhao/adv_ir/tmp_demo/control_map_interpolator_demo/highres_bilinear.png
+- /home/huhao/adv_ir/tmp_demo/control_map_interpolator_demo/highres_bicubic.png
+- /home/huhao/adv_ir/tmp_demo/control_map_interpolator_demo/highres_gaussian_default.png
+- /home/huhao/adv_ir/tmp_demo/control_map_interpolator_demo/highres_gaussian_no_extra.png
+- /home/huhao/adv_ir/tmp_demo/control_map_interpolator_demo/summary.json
+
 ### degradation
 module_name: degradation
 location: /home/huhao/adv_ir/source/degradation.py
 kind: module
-summary: noise/rain/haze degradation operators and regularization interfaces.
+summary: noise/rain/haze degradation operators and regularization interfaces; supports parameterized interpolation override for control maps.
 run: imported by training/attack scripts
 outputs: runtime tensors and regularization terms
+notes:
+- interpolation parameters are explicit function arguments:
+  - random_degradation_configs_from_image(image, interp_mode, gaussian_radius, gaussian_sigma, gaussian_extra_cells)
+  - default values keep current behavior: bicubic + align_corners=False path
 
 ### promptir_attack
 module_name: promptir_attack
@@ -159,6 +185,78 @@ run:
 - bash /home/huhao/adv_ir/source/run_train_nafnet_reside_ots.sh --num_gpu 3 --wandb_project adv_ir_nafnet_live
 - bash /home/huhao/adv_ir/source/run_train_nafnet_reside_ots.sh --dry_run --output_dir /home/huhao/adv_ir/tmp_demo/nafnet_train_3gpu_wandb_demo
 outputs: /home/huhao/adv_ir/tmp_demo/nafnet_reside_ots_train_launcher
+
+### nafnet_adv_training
+module_name: nafnet_adv_training
+location: /home/huhao/adv_ir/source/nafnet_adv_training.py
+kind: script + module
+summary: NAFNet online adversarial haze mix training with per-epoch resampling/cache; uses gradient normalization (mean=0/std=1) before surrogate image update, folds static scale into adv_lambda_reg, and cleans old resample epoch folders after each resample.
+run:
+- conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/nafnet_adv_training.py -opt /home/huhao/adv_ir/NAFNet/options/train/RESIDE_OTS/NAFNet-width32.yml --launcher none --adv_enable --wblogger adv_ir_nafnet_adv_haze50 --wandb_mode offline --dry_run --dry_run_output_dir /home/huhao/adv_ir/tmp_demo/nafnet_adv_training_dry_run
+outputs:
+- /home/huhao/adv_ir/tmp_demo/nafnet_adv_training_dry_run/dry_run_summary.json
+- /home/huhao/adv_ir/NAFNet/data/Train/adv_pairs/shared/resample_epoch_xxxx (during real training)
+notes:
+- static std is folded internally with approximation 1e-4.
+- effective lambda formula: adv_lambda_reg / 1e-4
+- wandb runtime args: --wblogger / --wandb_resume_id / --wandb_mode
+
+### promptir_adv_train
+module_name: promptir_adv_train
+location: /home/huhao/adv_ir/PromptIR/adv_train.py
+kind: script
+summary: PromptIR adversarial training entrypoint (supports NAFNet backend) with checkpoint naming shifted by +1 for epoch/step and checkpoint save interval set to 8 epochs.
+run:
+- cd /home/huhao/adv_ir/PromptIR && conda run -n promptir --no-capture-output python /home/huhao/adv_ir/PromptIR/adv_train.py --model_arch nafnet --de_type dehaze --ckpt_dir train_ckpt_nafnet_adv_haze50 --adv_enable
+outputs: /home/huhao/adv_ir/PromptIR/train_ckpt_nafnet_adv_haze50
+notes:
+- checkpoint filename format: epoch={epoch+1}-step={step+1}
+- checkpoint save frequency: every_n_epochs=8
+
+### run_train_nafnet_adv_haze50
+module_name: run_train_nafnet_adv_haze50
+location: /home/huhao/adv_ir/source/run_train_nafnet_adv_haze50.sh
+kind: shell script
+summary: one-command launcher for NAFNet adversarial haze training at 50% adversarial mix.
+run:
+- bash /home/huhao/adv_ir/source/run_train_nafnet_adv_haze50.sh
+- WANDB_PROJECT=adv_ir_nafnet_adv_haze50 WANDB_MODE=online RUN_NAME=naf_adv_haze50_live bash /home/huhao/adv_ir/source/run_train_nafnet_adv_haze50.sh
+outputs: /home/huhao/adv_ir/NAFNet/experiments/NAFNet-RESIDE-OTS-width32-adv-haze50
+
+### run_train_nafnet_adv_haze50_gaussian
+module_name: run_train_nafnet_adv_haze50_gaussian
+location: /home/huhao/adv_ir/source/run_train_nafnet_adv_haze50_gaussian.sh
+kind: shell script
+summary: one-command launcher for NAFNet adversarial haze training with gaussian interpolation control maps.
+run:
+- bash /home/huhao/adv_ir/source/run_train_nafnet_adv_haze50_gaussian.sh
+- bash /home/huhao/adv_ir/source/run_train_nafnet_adv_haze50_gaussian.sh --adv_gaussian_radius 5 --adv_gaussian_sigma 1.4 --adv_gaussian_extra_cells 3
+outputs: /home/huhao/adv_ir/PromptIR/train_ckpt_nafnet_adv_haze50_gaussian
+notes:
+- delegates to /home/huhao/adv_ir/PromptIR/adv_train.py with explicit CLI args.
+
+### run_train_nafnet_adv_haze50_promptir
+module_name: run_train_nafnet_adv_haze50_promptir
+location: /home/huhao/adv_ir/PromptIR/run_train_nafnet_adv_haze50.sh
+kind: shell script
+summary: PromptIR-side NAFNet adversarial training launcher with fixed gaussian interpolation settings (hard-coded).
+run: bash /home/huhao/adv_ir/PromptIR/run_train_nafnet_adv_haze50.sh
+outputs: /home/huhao/adv_ir/PromptIR/train_ckpt_nafnet_adv_haze50
+notes:
+- hard-coded interpolation args in script:
+  - --adv_map_interp_mode gaussian
+  - --adv_gaussian_radius 4
+  - --adv_gaussian_sigma 1.25
+  - --adv_gaussian_extra_cells 2
+
+### nafnet_adv_gaussian_smoke
+module_name: nafnet_adv_gaussian_smoke
+location: /home/huhao/adv_ir/source/nafnet_adv_gaussian_smoke.py
+kind: script
+summary: smoke demo verifying default bicubic and gaussian argument override for NAFNet adversarial degradation config.
+run: cd /home/huhao/adv_ir && rm -rf tmp_demo && mkdir -p tmp_demo && conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/nafnet_adv_gaussian_smoke.py --output_root /home/huhao/adv_ir/tmp_demo/nafnet_adv_gaussian_smoke
+outputs:
+- /home/huhao/adv_ir/tmp_demo/nafnet_adv_gaussian_smoke/summary.json
 
 ### train_nafnet
 module_name: train_nafnet

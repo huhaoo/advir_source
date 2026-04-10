@@ -1,6 +1,6 @@
 work_log_rolling
 
-last_update: 2026-04-08
+last_update: 2026-04-10
 workspace_root: /home/huhao/adv_ir
 
 purpose:
@@ -17,44 +17,195 @@ maintenance_rule:
 
 handoff_now:
 - current_focus:
-  - haze dataset builder density profile is adaptive/monotonic/randomized, and code structure has been slimmed by removing one-off helper wrappers.
+  - PromptIR NAFNet adversarial launcher is now fixed to gaussian interpolation (hard-coded script form).
 - status:
-  - implemented and validated on 2026-04-08.
+  - implemented and validated on 2026-04-10.
 - key_behavior:
-  - file: /home/huhao/adv_ir/source/haze_dataset_builder.py
-  - interface: density(Igt)->rho, then deg(Igt)->Ideg
-  - adaptive contour: aspect-ratio aware ellipse-like field with long-side inward notches
-  - edge-touch: adaptive q_touch ensures one contour level can touch all four borders
-  - random per-call profile ranges:
-    - edge inset: [0.02, 0.14]
-    - fade temperature q_temp: [0.20, 0.80]
-    - notch strength: [0.10, 0.32]
-    - max intensity amp_max: [0.30, 0.50]
-  - adv output-mean control:
-    - adv(..., fixed_output_mean=0.2) enforces per-sample output matrix mean to a fixed value
-    - mean constraint is applied during inner optimization and final output additive projection
-  - adv surrogate alignment (run_single_image_adversarial_degradation_search style):
-    - no softplus re-parameterization
-    - fixed_grad uses first input gradient and is rescaled to static target std
-      (9.64294260850096e-05 from doc/static.txt)
-- amplitude control:
-  - rho = amp_max * (sigmoid_profile / sigmoid_profile_max)
-  - no clamp is used for density amplitude
+  - updated /home/huhao/adv_ir/PromptIR/run_train_nafnet_adv_haze50.sh:
+    - hard-coded gaussian interpolation arguments before adv_train.py launch.
+    - removed the previously commented WANDB_MODE prefix and now sets WANDB_MODE=offline explicitly.
+  - updated /home/huhao/adv_ir/source/degradation.py:
+    - added parameter-driven interpolation override consumed by random_degradation_configs_from_image.
+    - default remains bicubic when interpolation args are not provided.
+    - supports gaussian knobs:
+      gaussian_radius / gaussian_sigma / gaussian_extra_cells.
+  - added /home/huhao/adv_ir/source/run_train_nafnet_adv_haze50_gaussian.sh:
+    - one-command gaussian launcher for PromptIR/adv_train.py (model_arch=nafnet).
+    - passes gaussian CLI args and keeps old training hyper-params baseline.
+  - added /home/huhao/adv_ir/source/nafnet_adv_gaussian_smoke.py:
+    - smoke demo that verifies default bicubic and gaussian argument override behavior.
 - latest_demo_output:
-  - /home/huhao/adv_ir/tmp_demo/fixed_grad_static_scale_smoke
+  - /home/huhao/adv_ir/tmp_demo/nafnet_adv_gaussian_smoke/summary.json
 - key_docs_synced:
   - /home/huhao/adv_ir/source/doc/module_document.txt
   - /home/huhao/adv_ir/source/doc/work_log.txt
 
 quick_continue_checklist:
 - run syntax check:
-  - conda run -n advir --no-capture-output python -m py_compile /home/huhao/adv_ir/source/haze_dataset_builder.py
-- run random max-intensity sanity check:
-  - conda run -n advir --no-capture-output python - <<'PY' ... from source.haze_dataset_builder import density ... print(max_list) ... PY
-- regenerate demo (reset tmp_demo first):
-  - cd /home/huhao/adv_ir && rm -rf tmp_demo && mkdir -p tmp_demo && conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/haze_dataset_builder.py --n 8 --output_root /home/huhao/adv_ir/tmp_demo/haze_dataset_builder_refactor_slim_smoke --seed 123 --max_border_crop 16 --density_plot_count 8
+  - bash -n /home/huhao/adv_ir/PromptIR/run_train_nafnet_adv_haze50.sh
+  - conda run -n advir --no-capture-output python -m py_compile /home/huhao/adv_ir/source/degradation.py /home/huhao/adv_ir/source/nafnet_adv_gaussian_smoke.py
+  - bash -n /home/huhao/adv_ir/source/run_train_nafnet_adv_haze50_gaussian.sh
+- dry-run demo (reset tmp_demo first):
+  - cd /home/huhao/adv_ir && rm -rf tmp_demo && mkdir -p tmp_demo && conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/nafnet_adv_gaussian_smoke.py --output_root /home/huhao/adv_ir/tmp_demo/nafnet_adv_gaussian_smoke
+  - bash -n /home/huhao/adv_ir/PromptIR/run_train_nafnet_adv_haze50.sh
+  - bash -n /home/huhao/adv_ir/source/run_train_nafnet_adv_haze50_gaussian.sh
 
 recent_sessions:
+
+- date: 2026-04-10
+  title: hard-code gaussian mode in PromptIR NAFNet launcher
+  changes:
+  - updated /home/huhao/adv_ir/PromptIR/run_train_nafnet_adv_haze50.sh:
+    - added fixed interpolation args:
+      --adv_map_interp_mode gaussian
+      --adv_gaussian_radius 4
+      --adv_gaussian_sigma 1.25
+      --adv_gaussian_extra_cells 2
+    - sets WANDB_MODE=offline in launch prefix.
+  - updated docs:
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  validations:
+  - script syntax check passed:
+    - bash -n /home/huhao/adv_ir/PromptIR/run_train_nafnet_adv_haze50.sh
+  - smoke demo passed:
+    - /home/huhao/adv_ir/tmp_demo/nafnet_adv_gaussian_smoke/summary.json
+    - with_gaussian_args confirms gaussian(radius=4, sigma=1.25, extra=2)
+
+- date: 2026-04-10
+  title: gaussian launcher for NAFNet adversarial training
+  changes:
+  - updated /home/huhao/adv_ir/source/degradation.py:
+    - random_degradation_configs_from_image now accepts interpolation mode and gaussian params as function args.
+    - default-arg path remains bicubic for compatibility.
+  - added /home/huhao/adv_ir/source/run_train_nafnet_adv_haze50_gaussian.sh:
+    - new one-command launcher for gaussian interpolation training flow.
+  - added /home/huhao/adv_ir/source/nafnet_adv_gaussian_smoke.py:
+    - smoke demo to verify interpolation mode switching and parameter propagation.
+  - updated docs:
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  validations:
+  - syntax checks passed:
+    - conda run -n advir --no-capture-output python -m py_compile /home/huhao/adv_ir/source/degradation.py /home/huhao/adv_ir/source/nafnet_adv_gaussian_smoke.py
+    - bash -n /home/huhao/adv_ir/source/run_train_nafnet_adv_haze50_gaussian.sh
+  - smoke demo passed:
+    - /home/huhao/adv_ir/tmp_demo/nafnet_adv_gaussian_smoke/summary.json
+    - baseline_without_args: bicubic
+    - with_gaussian_args: gaussian(radius=4, sigma=1.25, extra=2)
+
+- date: 2026-04-09
+  title: unified interpolation module demo for control maps
+  changes:
+  - added /home/huhao/adv_ir/source/control_map_interpolator_demo.py:
+    - produces interpolation demo images and summary metrics in tmp_demo.
+    - verifies bilinear/bicubic default parity with torch interpolate.
+    - includes gaussian boundary extension ablation (`gaussian_extra_cells`).
+  - updated docs:
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  validations:
+  - syntax check passed:
+    - conda run -n advir --no-capture-output python -m py_compile /home/huhao/adv_ir/source/control_map_interpolator_demo.py
+  - demo run passed:
+    - /home/huhao/adv_ir/tmp_demo/control_map_interpolator_demo/summary.json
+    - bilinear_vs_torch_max_abs_diff=0.0
+    - bicubic_vs_torch_max_abs_diff=0.0
+    - edge_mean_abs_diff_default_vs_no_extra=0.004780920222401619
+
+- date: 2026-04-08
+  title: add dynamic wandb upload controls for NAFNet adversarial training
+  changes:
+  - updated /home/huhao/adv_ir/source/nafnet_adv_training.py:
+    - added PromptIR-style runtime args:
+      --wblogger / --wandb_resume_id / --wandb_mode.
+    - logger.wandb project/resume_id are now injected at runtime before logger init.
+    - WANDB_MODE and WANDB_CONSOLE are configured in runtime options.
+    - dry-run summary now includes wandb_project / wandb_resume_id / wandb_mode.
+  - updated /home/huhao/adv_ir/source/run_train_nafnet_adv_haze50.sh:
+    - now supports dynamic env-driven wandb upload:
+      WANDB_PROJECT, WANDB_RESUME_ID, WANDB_MODE, RUN_NAME, NUM_GPU, MASTER_PORT.
+  - updated docs:
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  validations:
+  - syntax checks passed:
+    - conda run -n advir --no-capture-output python -m py_compile /home/huhao/adv_ir/source/nafnet_adv_training.py
+    - bash -n /home/huhao/adv_ir/source/run_train_nafnet_adv_haze50.sh
+  - dry-run with wandb args passed:
+    - /home/huhao/adv_ir/tmp_demo/nafnet_adv_training_dry_run/dry_run_summary.json
+    - summary fields verified:
+      wandb_project=adv_ir_nafnet_adv_haze50
+      wandb_resume_id=test_resume_001
+      wandb_mode=offline
+
+- date: 2026-04-08
+  title: add resample-cache cleanup + 3-process test pass (dry-run)
+  changes:
+  - updated /home/huhao/adv_ir/source/nafnet_adv_training.py:
+    - added automatic cleanup of old resample folders after each successful resample.
+    - keeps only current `resample_epoch_xxxx` under
+      /home/huhao/adv_ir/NAFNet/data/Train/adv_pairs/shared.
+  - updated docs:
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  validations:
+  - 3-process distributed dry-run passed:
+    - conda run -n advir --no-capture-output python -m torch.distributed.run --nproc_per_node 3 --master_port 29631 /home/huhao/adv_ir/source/nafnet_adv_training.py -opt /home/huhao/adv_ir/NAFNet/options/train/RESIDE_OTS/NAFNet-width32.yml --launcher pytorch --adv_enable --dry_run
+    - output: /home/huhao/adv_ir/tmp_demo/nafnet_adv_training_dry_run/dry_run_summary.json
+  - real cleanup smoke passed (single-process CPU):
+    - resample epoch0 + epoch1 both executed.
+    - final remaining cache dir:
+      /home/huhao/adv_ir/NAFNet/data/Train/adv_pairs/shared/resample_epoch_0001
+  note:
+  - 3-process real training in current environment failed before training loop because NAFNet upstream DDP wrapper expects GPU device_ids when `dist=True`; this is an environment/runtime constraint here (no CUDA devices available).
+
+- date: 2026-04-08
+  title: simplify static lambda interface + run real smoke training
+  changes:
+  - updated /home/huhao/adv_ir/source/nafnet_adv_training.py:
+    - removed cli args `adv_static_grad_std` and `adv_lambda_adjust_mode`.
+    - folded static scale directly into lambda with fixed approximation:
+      effective_lambda = adv_lambda_reg / 1e-4.
+    - kept gradient normalization before surrogate transfer (mean=0, std=1).
+  - updated /home/huhao/adv_ir/source/run_train_nafnet_adv_haze50.sh:
+    - removed obsolete lambda-adjust args from launcher.
+  - updated docs:
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  validations:
+  - syntax check passed:
+    - conda run -n advir --no-capture-output python -m py_compile /home/huhao/adv_ir/source/nafnet_adv_training.py
+  - launcher shell syntax check passed:
+    - bash -n /home/huhao/adv_ir/source/run_train_nafnet_adv_haze50.sh
+  - real smoke training passed (CPU, 1 sample, 1 iter):
+    - adversarial cache generated:
+      /home/huhao/adv_ir/NAFNet/data/Train/adv_pairs/shared/resample_epoch_0000
+    - model checkpoint generated:
+      /home/huhao/adv_ir/NAFNet/experiments/NAFNet-RESIDE-OTS-width32-adv-smoke-cpu/models/net_g_latest.pth
+
+- date: 2026-04-08
+  title: add NAFNet adversarial haze training pipeline (online resample)
+  changes:
+  - added /home/huhao/adv_ir/source/nafnet_adv_training.py:
+    - wraps NAFNet train dataset with adversarial mixed dataset and epoch-level resampling/cache.
+    - adds NAFNet-targeted adversarial haze search inner loop.
+    - normalizes image gradient before surrogate transfer (mean=0, std=1).
+    - adjusts effective adv_lambda_reg via static gradient std with selectable modes
+      (default: divide_by_static using 9.64294260850096e-05 from doc/static.txt).
+    - supports dry-run summary output under tmp_demo.
+  - added /home/huhao/adv_ir/source/run_train_nafnet_adv_haze50.sh:
+    - fixed launcher for 3-GPU adversarial haze50 training.
+  - updated docs:
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  validations:
+  - syntax check passed:
+    - conda run -n advir --no-capture-output python -m py_compile /home/huhao/adv_ir/source/nafnet_adv_training.py
+  - launcher shell syntax check passed:
+    - bash -n /home/huhao/adv_ir/source/run_train_nafnet_adv_haze50.sh
+  - dry-run demo passed:
+    - /home/huhao/adv_ir/tmp_demo/nafnet_adv_training_dry_run/dry_run_summary.json
 
 - date: 2026-04-08
   title: fixed_grad scaled to static gradient statistics

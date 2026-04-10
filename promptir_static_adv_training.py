@@ -22,7 +22,7 @@ PROMPTIR_ROOT = PROJECT_ROOT / "PromptIR"
 if str(PROMPTIR_ROOT) not in sys.path:
     sys.path.insert(0, str(PROMPTIR_ROOT))
 
-from net.model import PromptIR  # noqa: E402
+from net.model import build_promptir_model_from_options  # noqa: E402
 from options import options as opt  # noqa: E402
 from utils.dataset_utils import PromptTrainDataset  # noqa: E402
 from utils.image_utils import crop_img, random_augmentation  # noqa: E402
@@ -191,7 +191,7 @@ class promptir_static_adv_mix_dataset(Dataset):
 class promptir_static_adv_model(pl.LightningModule):
     def __init__(self):
         super().__init__()
-        self.net = PromptIR(decoder=True)
+        self.net = build_promptir_model_from_options(opt, decoder=True)
         self.loss_fn = nn.L1Loss()
 
     def forward(self, x):

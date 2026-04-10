@@ -8,9 +8,12 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 import torch
-import torch.nn.functional as F
 from torch import Tensor
 
+try:
+    from control_map_interpolator import InterpolationFieldConfig, control_map_interpolator
+except ModuleNotFoundError:
+    from .control_map_interpolator import InterpolationFieldConfig, control_map_interpolator
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATASET_ROOT = PROJECT_ROOT / "dataset"
@@ -229,13 +232,23 @@ def adv(
 
     b, _, h, w = fixed_grad.shape
     low_res_param = torch.nn.Parameter(torch.zeros((1, 1, low_h, low_w), dtype=fixed_grad.dtype, device=fixed_grad.device))
-    optimizer = torch.optim.Adam([low_res_param], lr=1e-1)
+    optimizer = torch.optim.Adam([low_res_param], lr=1e-3)
     target_mean = float(fixed_output_mean)
+    highres_interpolator = control_map_interpolator(
+        InterpolationFieldConfig(
+            low_res_height=low_h,
+            low_res_width=low_w,
+            high_res_height=h,
+            high_res_width=w,
+            mode="bicubic",
+            align_corners=False,
+        )
+    ).to(device=fixed_grad.device)
 
-    for _ in range(32):
+    for _ in range(256):
         optimizer.zero_grad(set_to_none=True)
         rho_low = low_res_param
-        rho_high = F.interpolate(rho_low, size=(h, w), mode="bicubic", align_corners=False).expand(b, 1, h, w)
+        rho_high = highres_interpolator(rho_low).expand(b, 1, h, w)
         # Keep optimization under fixed-mean constraint by additive projection.
         current_mean = rho_high.mean(dim=(2, 3), keepdim=True)
         rho_high = rho_high + (target_mean - current_mean)
@@ -248,7 +261,7 @@ def adv(
         optimizer.step()
 
     with torch.no_grad():
-        rho_high = F.interpolate(low_res_param, size=(h, w), mode="bicubic", align_corners=False).expand(b, 1, h, w)
+        rho_high = highres_interpolator(low_res_param).expand(b, 1, h, w)
         # Fix output matrix mean exactly by additive projection.
         current_mean = rho_high.mean(dim=(2, 3), keepdim=True)
         rho_high = rho_high + (target_mean - current_mean)
@@ -289,7 +302,7 @@ def density(i_gt: Tensor) -> Tensor:
     edge_inset = float(torch.empty((), dtype=i_gt_bchw.dtype, device=i_gt_bchw.device).uniform_(0.02, 0.14).item())
     q_temp = float(torch.empty((), dtype=i_gt_bchw.dtype, device=i_gt_bchw.device).uniform_(0.2, 0.8).item())
     notch_strength = float(torch.empty((), dtype=i_gt_bchw.dtype, device=i_gt_bchw.device).uniform_(0.10, 0.32).item())
-    amp_max = float(torch.empty((), dtype=i_gt_bchw.dtype, device=i_gt_bchw.device).uniform_(0.15, 0.3).item())
+    amp_max = float(torch.empty((), dtype=i_gt_bchw.dtype, device=i_gt_bchw.device).uniform_(0.1, 0.2).item())
 
     if w >= h:
         notch_sigma_tangent = 0.22
@@ -326,8 +339,9 @@ def density(i_gt: Tensor) -> Tensor:
     # Use sigmoid profile and scale it to a random max in [0.3, 0.5], without clamp.
     rho_sigmoid = torch.sigmoid((q_deformed - q_mid) / q_temp)
     rho_sigmoid_max = rho_sigmoid.amax(dim=(2, 3), keepdim=True).clamp_min(1e-12)
-    rho = amp_max * (rho_sigmoid / rho_sigmoid_max)
-    rho=adv(rho, 1e-5, 2e-5,rho.shape[-2:],amp_max)
+    rho = (rho_sigmoid / rho_sigmoid_max)
+    # rho=adv(rho, 1e-3, 2e-3,rho.shape[-2:],amp_max)
+    rho=adv(rho, 1e-4, 2e-4,(32, 32),amp_max)
     return rho
 
 
@@ -346,7 +360,17 @@ def deg(
     if rho_bchw.shape[0] != i_gt_bchw.shape[0]:
         raise ValueError(f"density batch mismatch: rho={rho_bchw.shape[0]}, i_gt={i_gt_bchw.shape[0]}")
     if rho_bchw.shape[2:] != i_gt_bchw.shape[2:]:
-        rho_bchw = F.interpolate(rho_bchw, size=i_gt_bchw.shape[2:], mode="bilinear", align_corners=False)
+        rho_interpolator = control_map_interpolator(
+            InterpolationFieldConfig(
+                low_res_height=int(rho_bchw.shape[2]),
+                low_res_width=int(rho_bchw.shape[3]),
+                high_res_height=int(i_gt_bchw.shape[2]),
+                high_res_width=int(i_gt_bchw.shape[3]),
+                mode="bilinear",
+                align_corners=False,
+            )
+        ).to(device=rho_bchw.device)
+        rho_bchw = rho_interpolator(rho_bchw)
     if rho_bchw.shape[1] not in {1, i_gt_bchw.shape[1]}:
         raise ValueError(
             f"density channel must be 1 or C={i_gt_bchw.shape[1]}, got {rho_bchw.shape[1]}"

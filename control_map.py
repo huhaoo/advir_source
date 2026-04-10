@@ -4,10 +4,11 @@ from dataclasses import dataclass
 
 import torch
 from torch import Tensor, nn
-import torch.nn.functional as F
 
-
-allowed_interp_modes = {"nearest", "bilinear", "bicubic", "area"}
+try:
+    from control_map_interpolator import InterpolationFieldConfig, allowed_interp_modes, control_map_interpolator
+except ModuleNotFoundError:
+    from .control_map_interpolator import InterpolationFieldConfig, allowed_interp_modes, control_map_interpolator
 allowed_init_modes = {"zeros", "constant", "uniform", "normal"}
 
 
@@ -19,6 +20,9 @@ class ControlMapConfig:
     high_res_width: int
     interp_mode: str = "bicubic"
     align_corners: bool | None = False
+    gaussian_radius: int = 3
+    gaussian_sigma: float = 1.25
+    gaussian_extra_cells: int = 1
     lambda_first_order: float = 1e-2
     lambda_second_order: float = 1e-3
     init_mode: str = "zeros"
@@ -47,6 +51,9 @@ class control_map(nn.Module):
         high_res_width = config.high_res_width
         interp_mode = config.interp_mode
         align_corners = config.align_corners
+        gaussian_radius = config.gaussian_radius
+        gaussian_sigma = config.gaussian_sigma
+        gaussian_extra_cells = config.gaussian_extra_cells
         lambda_first_order = config.lambda_first_order
         lambda_second_order = config.lambda_second_order
         init_mode = config.init_mode
@@ -71,6 +78,9 @@ class control_map(nn.Module):
 
         self.interp_mode = interp_mode
         self.align_corners = align_corners
+        self.gaussian_radius = int(gaussian_radius)
+        self.gaussian_sigma = float(gaussian_sigma)
+        self.gaussian_extra_cells = int(gaussian_extra_cells)
 
         self.lambda_first_order = float(lambda_first_order)
         self.lambda_second_order = float(lambda_second_order)
@@ -79,6 +89,19 @@ class control_map(nn.Module):
         self.init_value = float(init_value)
         self.init_scale = float(init_scale)
 
+        self.interpolator = control_map_interpolator(
+            InterpolationFieldConfig(
+                low_res_height=self.low_res_height,
+                low_res_width=self.low_res_width,
+                high_res_height=self.high_res_height,
+                high_res_width=self.high_res_width,
+                mode=self.interp_mode,
+                align_corners=self.align_corners,
+                gaussian_radius=self.gaussian_radius,
+                gaussian_sigma=self.gaussian_sigma,
+                gaussian_extra_cells=self.gaussian_extra_cells,
+            )
+        )
         self.low_res_param = nn.Parameter(torch.empty(1, 1, low_res_height, low_res_width))
         self.reset_parameters()
 
@@ -103,10 +126,7 @@ class control_map(nn.Module):
             else: raise RuntimeError(f"Unsupported init_mode: {self.init_mode}")
 
     def _interpolate(self, x: Tensor) -> Tensor:
-        size = (self.high_res_height, self.high_res_width)
-        if self.interp_mode in {"bilinear", "bicubic"}:
-            return F.interpolate(x, size=size, mode=self.interp_mode, align_corners=self.align_corners)
-        return F.interpolate(x, size=size, mode=self.interp_mode)
+        return self.interpolator(x)
 
     def forward(self) -> Tensor:
         """Generate high-resolution continuous control map: [1, 1, H, W]."""
@@ -193,6 +213,9 @@ class control_map_router(nn.Module):
                         high_res_width=self.high_res_width,
                         interp_mode=map_config.interp_mode,
                         align_corners=map_align_corners,
+                        gaussian_radius=map_config.gaussian_radius,
+                        gaussian_sigma=map_config.gaussian_sigma,
+                        gaussian_extra_cells=map_config.gaussian_extra_cells,
                         lambda_first_order=map_config.lambda_first_order,
                         lambda_second_order=map_config.lambda_second_order,
                         init_mode=map_config.init_mode,
