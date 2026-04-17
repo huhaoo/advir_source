@@ -11,3 +11,4 @@ agent_rule
 9. Documentation txt files are stored in /home/huhao/adv_ir/source/doc. After modifications, remember to also update the doc files.
 10. Demo outputs must be stored in /home/huhao/adv_ir/tmp_demo. Generate a demo for every change.
 11. Maintain /home/huhao/adv_ir/source/doc/work_log.txt as a rolling handoff log: keep current handoff + recent sessions, compress older history into short baseline summary, and avoid storing long duplicated early details.
+12. For prompt design/updates, run a codex-high subagent review first, then store the reviewed subagent config under /home/huhao/adv_ir/source/doc.

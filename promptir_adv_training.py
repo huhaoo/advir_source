@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import torch
 import torch.distributed as dist
 from torch.utils.data import Dataset
@@ -38,9 +38,9 @@ class promptir_adv_mix_dataset(Dataset):
         self.base_dataset = base_dataset
         self.args = args
 
-        self.adv_ratio = float(getattr(args, "adv_ratio", 0.5))
-        if not (0.0 < self.adv_ratio < 1.0):
-            raise ValueError(f"adv_ratio must be in (0, 1), got {self.adv_ratio}")
+        self.adv_ratio = float(getattr(args, "adv_ratio", 1))
+        if not (0.0 < self.adv_ratio <= 1.0):
+            raise ValueError(f"adv_ratio must be in (0, 1], got {self.adv_ratio}")
 
         self.adv_resample_epochs = int(getattr(args, "adv_resample_epochs", 8))
         if self.adv_resample_epochs <= 0:
@@ -49,8 +49,7 @@ class promptir_adv_mix_dataset(Dataset):
         self.adv_steps1 = int(getattr(args, "adv_steps1", 2))
         self.adv_steps2 = int(getattr(args, "adv_steps2", 2))
         self.adv_step_size = float(getattr(args, "adv_step_size", 3e-2))
-        self.adv_lambda_reg = float(getattr(args, "adv_lambda_reg", 0.05))
-        self.adv_lambda_reg_effective = self.adv_lambda_reg / 1e-4
+        self.adv_lambda_reg = float(getattr(args, "adv_lambda_reg", 2.0))
         self.adv_promptir_patch_size = int(getattr(args, "adv_promptir_patch_size", getattr(args, "patch_size", 128)))
         self.adv_promptir_patch_overlap = int(getattr(args, "adv_promptir_patch_overlap", max(0, self.adv_promptir_patch_size // 4)))
         if self.adv_promptir_patch_size <= 0:
@@ -66,6 +65,7 @@ class promptir_adv_mix_dataset(Dataset):
         self.adv_aug_k = int(getattr(args, "adv_aug_k", 1))
         if self.adv_aug_k <= 0:
             raise ValueError(f"adv_aug_k must be >= 1, got {self.adv_aug_k}")
+        self.adv_save_density_maps = bool(getattr(args, "adv_save_density_maps", False))
         self.adv_map_interp_mode = str(getattr(args, "adv_map_interp_mode", "bicubic")).strip().lower()
         if self.adv_map_interp_mode not in {"nearest", "bilinear", "bicubic", "area", "gaussian"}:
             raise ValueError(
@@ -76,12 +76,28 @@ class promptir_adv_mix_dataset(Dataset):
         self.adv_gaussian_radius = int(getattr(args, "adv_gaussian_radius", 4))
         self.adv_gaussian_sigma = float(getattr(args, "adv_gaussian_sigma", 1.25))
         self.adv_gaussian_extra_cells = int(getattr(args, "adv_gaussian_extra_cells", 2))
+        self.adv_gaussian_enable_offset = bool(getattr(args, "adv_gaussian_enable_offset", False))
+        self.adv_gaussian_offset_max = float(getattr(args, "adv_gaussian_offset_max", 0.5))
+        self.adv_gaussian_offset_lambda_first_order = float(getattr(args, "adv_gaussian_offset_lambda_first_order", 0.05))
+        self.adv_gaussian_offset_lambda_second_order = float(getattr(args, "adv_gaussian_offset_lambda_second_order", 0.2))
         if self.adv_gaussian_radius <= 0:
             raise ValueError(f"adv_gaussian_radius must be > 0, got {self.adv_gaussian_radius}")
         if self.adv_gaussian_sigma <= 0:
             raise ValueError(f"adv_gaussian_sigma must be > 0, got {self.adv_gaussian_sigma}")
         if self.adv_gaussian_extra_cells < 0:
             raise ValueError(f"adv_gaussian_extra_cells must be >= 0, got {self.adv_gaussian_extra_cells}")
+        if self.adv_gaussian_offset_max < 0:
+            raise ValueError(f"adv_gaussian_offset_max must be >= 0, got {self.adv_gaussian_offset_max}")
+        if self.adv_gaussian_offset_lambda_first_order < 0:
+            raise ValueError(
+                "adv_gaussian_offset_lambda_first_order must be >= 0, "
+                f"got {self.adv_gaussian_offset_lambda_first_order}"
+            )
+        if self.adv_gaussian_offset_lambda_second_order < 0:
+            raise ValueError(
+                "adv_gaussian_offset_lambda_second_order must be >= 0, "
+                f"got {self.adv_gaussian_offset_lambda_second_order}"
+            )
 
         self.base_len = len(self.base_dataset)
         self.adv_len = self._compute_adv_len()
@@ -93,6 +109,11 @@ class promptir_adv_mix_dataset(Dataset):
 
         self.depth_dir = PROJECT_ROOT / "dataset" / "haze" / "reside_ots" / "depth"
         self.haze_source_indices = self._build_haze_source_indices()
+
+    def _should_resample_epoch(self, epoch: int, force: bool) -> bool:
+        if force:
+            return True
+        return int(epoch) % self.adv_resample_epochs == 0
 
     def _build_haze_source_indices(self) -> list[int]:
         indices: list[int] = []
@@ -150,7 +171,8 @@ class promptir_adv_mix_dataset(Dataset):
             raise ValueError(f"rank must be in [0, world), got rank={rank}, world={world}")
 
         # Weighted split for DDP shards: rank0:others = 1:2:2:...
-        weights = [1] + [2] * (world - 1)
+        # weights = [1] + [2] * (world - 1)
+        weights = [1] + [1] * (world - 1)
         weight_sum = int(sum(weights))
         if weight_sum <= 0:
             raise RuntimeError("invalid shard weights: sum must be positive")
@@ -229,6 +251,9 @@ class promptir_adv_mix_dataset(Dataset):
                     "attack_subset": ["haze"],
                 }
             )
+            density_path = item.get("density_path")
+            if isinstance(density_path, str) and os.path.exists(density_path):
+                out[-1]["density_path"] = density_path
         return out
 
     def _compute_adv_len(self) -> int:
@@ -272,6 +297,64 @@ class promptir_adv_mix_dataset(Dataset):
     def _save_rgb_tensor(self, image: torch.Tensor, path: Path) -> None:
         self._save_rgb_np(self._tensor_to_uint8_hwc(image), path)
 
+    def _save_density_np_with_value_bar(self, density_map: np.ndarray, path: Path) -> None:
+        if not isinstance(density_map, np.ndarray):
+            raise ValueError(f"density_map must be numpy.ndarray, got {type(density_map)!r}")
+        if density_map.ndim == 3 and density_map.shape[2] == 1:
+            density_map = density_map[:, :, 0]
+        if density_map.ndim != 2:
+            raise ValueError(f"density_map must be 2D, got shape={density_map.shape}")
+
+        rho = np.asarray(density_map, dtype=np.float32)
+        rho_min = float(rho.min())
+        rho_max = float(rho.max())
+        rho_mean = float(rho.mean())
+
+        if rho_max > rho_min:
+            rho_norm = (rho - rho_min) / (rho_max - rho_min)
+        else:
+            rho_norm = np.zeros_like(rho, dtype=np.float32)
+
+        heat_u8 = (rho_norm * 255.0 + 0.5).astype(np.uint8)
+        heat_rgb = np.repeat(heat_u8[:, :, None], 3, axis=2)
+        heat_img = Image.fromarray(heat_rgb, mode="RGB")
+
+        h, w = heat_u8.shape
+        gap = 8
+        bar_w = 18
+        right_pad = 84
+        canvas = Image.new("RGB", (w + gap + bar_w + right_pad, h), color=(0, 0, 0))
+        canvas.paste(heat_img, (0, 0))
+
+        bar_grad = np.linspace(1.0, 0.0, num=h, dtype=np.float32).reshape(h, 1)
+        bar_u8 = (bar_grad * 255.0 + 0.5).astype(np.uint8)
+        bar_rgb = np.repeat(np.repeat(bar_u8, bar_w, axis=1)[:, :, None], 3, axis=2)
+        bar_img = Image.fromarray(bar_rgb, mode="RGB")
+        bar_x = w + gap
+        canvas.paste(bar_img, (bar_x, 0))
+
+        draw = ImageDraw.Draw(canvas)
+        font = ImageFont.load_default()
+        draw.rectangle((bar_x, 0, bar_x + bar_w - 1, h - 1), outline=(255, 255, 255), width=1)
+
+        tick_x0 = bar_x + bar_w + 3
+        tick_points = [(0, rho_max), (h // 2, 0.5 * (rho_max + rho_min)), (h - 1, rho_min)]
+        for y_tick, value in tick_points:
+            y_tick = int(min(max(y_tick, 0), h - 1))
+            draw.line((bar_x + bar_w, y_tick, bar_x + bar_w + 4, y_tick), fill=(255, 255, 255), width=1)
+            draw.text((tick_x0 + 3, max(0, y_tick - 6)), f"{value:.4f}", fill=(255, 255, 255), font=font)
+
+        text = f"min={rho_min:.4f} max={rho_max:.4f} mean={rho_mean:.4f}"
+        text_bbox = draw.textbbox((0, 0), text, font=font)
+        text_w = text_bbox[2] - text_bbox[0]
+        text_h = text_bbox[3] - text_bbox[1]
+        pad = 3
+        draw.rectangle((0, 0, text_w + 2 * pad, text_h + 2 * pad), fill=(0, 0, 0))
+        draw.text((pad, pad), text, fill=(255, 255, 255), font=font)
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        canvas.save(path)
+
     def _ensure_min_hw_tensor_pair(
         self,
         image: torch.Tensor,
@@ -309,14 +392,66 @@ class promptir_adv_mix_dataset(Dataset):
         adv_np: np.ndarray,
         clean_np: np.ndarray,
         k: int,
-    ) -> list[tuple[np.ndarray, np.ndarray]]:
-        if k <= 1:
-            return [(adv_np, clean_np)]
+        density_np: np.ndarray | None = None,
+    ) -> list[tuple[np.ndarray, np.ndarray, np.ndarray | None]]:
+        def _crop_array(arr: np.ndarray, top: int, h_end: int, left: int, w_end: int) -> np.ndarray:
+            if arr.ndim == 2:
+                return np.ascontiguousarray(arr[top:h_end, left:w_end])
+            if arr.ndim == 3:
+                return np.ascontiguousarray(arr[top:h_end, left:w_end, :])
+            raise ValueError(f"unsupported array rank for crop: shape={arr.shape}")
 
-        outputs: list[tuple[np.ndarray, np.ndarray]] = [(adv_np, clean_np)]
+        def _random_border_crop_arrays(*arrays: np.ndarray, max_crop: int = 16) -> list[np.ndarray]:
+            if len(arrays) == 0:
+                raise ValueError("arrays must be non-empty")
+
+            h0, w0 = arrays[0].shape[:2]
+            for arr in arrays[1:]:
+                if arr.shape[:2] != (h0, w0):
+                    raise ValueError(f"shape mismatch: expected {(h0, w0)}, got {arr.shape[:2]}")
+
+            if h0 <= 1 or w0 <= 1 or max_crop <= 0:
+                return [np.ascontiguousarray(arr) for arr in arrays]
+
+            max_top = min(max_crop, h0 - 1)
+            top = random.randint(0, max_top)
+            max_bottom = min(max_crop, h0 - top - 1)
+            bottom = random.randint(0, max_bottom)
+
+            max_left = min(max_crop, w0 - 1)
+            left = random.randint(0, max_left)
+            max_right = min(max_crop, w0 - left - 1)
+            right = random.randint(0, max_right)
+
+            h_end = h0 - bottom if bottom > 0 else h0
+            w_end = w0 - right if right > 0 else w0
+            return [_crop_array(arr, top, h_end, left, w_end) for arr in arrays]
+
+        base_arrays: list[np.ndarray] = [adv_np, clean_np]
+        if density_np is not None:
+            base_arrays.append(density_np)
+
+        if k <= 1:
+            cropped = _random_border_crop_arrays(*base_arrays, max_crop=16)
+            if density_np is None:
+                return [(cropped[0], cropped[1], None)]
+            return [(cropped[0], cropped[1], cropped[2])]
+
+        cropped_base = _random_border_crop_arrays(*base_arrays, max_crop=16)
+        if density_np is None:
+            outputs: list[tuple[np.ndarray, np.ndarray, np.ndarray | None]] = [(cropped_base[0], cropped_base[1], None)]
+        else:
+            outputs = [(cropped_base[0], cropped_base[1], cropped_base[2])]
+
         for _ in range(k - 1):
-            aug_adv, aug_clean = random_augmentation(adv_np, clean_np)
-            outputs.append((aug_adv, aug_clean))
+            if density_np is None:
+                aug_adv, aug_clean = random_augmentation(adv_np, clean_np)
+                aug_cropped = _random_border_crop_arrays(aug_adv, aug_clean, max_crop=16)
+                outputs.append((aug_cropped[0], aug_cropped[1], None))
+            else:
+                aug_adv, aug_clean, aug_density = random_augmentation(adv_np, clean_np, density_np)
+                aug_cropped = _random_border_crop_arrays(aug_adv, aug_clean, aug_density, max_crop=16)
+                outputs.append((aug_cropped[0], aug_cropped[1], aug_cropped[2]))
         return outputs
 
     def resample_main_process_then_sync(
@@ -325,7 +460,7 @@ class promptir_adv_mix_dataset(Dataset):
         force: bool = False,
         promptir_model_override: torch.nn.Module | None = None,
     ) -> None:
-        should_resample = force or (self._last_resampled_epoch is None) or (epoch % self.adv_resample_epochs == 0)
+        should_resample = self._should_resample_epoch(epoch=epoch, force=force)
         if not should_resample:
             return
 
@@ -366,7 +501,7 @@ class promptir_adv_mix_dataset(Dataset):
         force: bool = False,
         promptir_model_override: torch.nn.Module | None = None,
     ) -> None:
-        should_resample = force or (self._last_resampled_epoch is None) or (epoch % self.adv_resample_epochs == 0)
+        should_resample = self._should_resample_epoch(epoch=epoch, force=force)
         if not should_resample:
             return
 
@@ -389,8 +524,7 @@ class promptir_adv_mix_dataset(Dataset):
         print(
             f"[AdvMixHazeOnly] epoch={epoch} base={self.base_len} adv_target={self.adv_len} adv_ready={len(self.adv_records)} "
             f"k={self.adv_aug_k} resample_every={self.adv_resample_epochs} "
-            f"lambda_base={self.adv_lambda_reg:.6g} lambda_effective={self.adv_lambda_reg_effective:.6g} "
-            f"lambda_scale=1e4 sample_root={self._epoch_dir(epoch)}"
+            f"lambda_reg={self.adv_lambda_reg:.6g} sample_root={self._epoch_dir(epoch)}"
         )
 
     def _resample_local_shard(
@@ -403,6 +537,9 @@ class promptir_adv_mix_dataset(Dataset):
         epoch_dir = self._epoch_dir(epoch)
         input_dir = epoch_dir / "input"
         target_dir = epoch_dir / "target"
+        density_dir = epoch_dir / "density"
+        if self.adv_save_density_maps:
+            density_dir.mkdir(parents=True, exist_ok=True)
 
         local_target, pair_offset = self._local_target_and_offset(total=self.adv_len, rank=rank, world=world)
         if local_target <= 0:
@@ -467,6 +604,10 @@ class promptir_adv_mix_dataset(Dataset):
                     gaussian_radius=self.adv_gaussian_radius,
                     gaussian_sigma=self.adv_gaussian_sigma,
                     gaussian_extra_cells=self.adv_gaussian_extra_cells,
+                    gaussian_enable_offset=self.adv_gaussian_enable_offset,
+                    gaussian_offset_max=self.adv_gaussian_offset_max,
+                    gaussian_offset_lambda_first_order=self.adv_gaussian_offset_lambda_first_order,
+                    gaussian_offset_lambda_second_order=self.adv_gaussian_offset_lambda_second_order,
                 )
                 result = run_single_image_adversarial_degradation_search(
                     image=image,
@@ -477,7 +618,7 @@ class promptir_adv_mix_dataset(Dataset):
                     steps1=self.adv_steps1,
                     steps2=self.adv_steps2,
                     step_size=self.adv_step_size,
-                    lambda_reg=self.adv_lambda_reg_effective,
+                    lambda_reg=self.adv_lambda_reg,
                     rain_topk=1,
                     save_dir=None,
                     record_history=False,
@@ -492,10 +633,19 @@ class promptir_adv_mix_dataset(Dataset):
 
                 adv_np = self._tensor_to_uint8_hwc(adv_img)
                 clean_np = self._tensor_to_uint8_hwc(clean_img)
-                expanded_pairs = self._expand_with_simple_augmentations(adv_np=adv_np, clean_np=clean_np, k=self.adv_aug_k)
+                density_np: np.ndarray | None = None
+                if self.adv_save_density_maps:
+                    with torch.no_grad():
+                        density_np = controller.get_beta_map()[0, 0].detach().cpu().float().numpy()
+                expanded_pairs = self._expand_with_simple_augmentations(
+                    adv_np=adv_np,
+                    clean_np=clean_np,
+                    k=self.adv_aug_k,
+                    density_np=density_np,
+                )
 
                 clean_name = Path(clean_path).stem
-                for aug_idx, (aug_adv_np, aug_clean_np) in enumerate(expanded_pairs):
+                for aug_idx, (aug_adv_np, aug_clean_np, aug_density_np) in enumerate(expanded_pairs):
                     if len(local_records) >= local_target:
                         break
                     pair_id = f"{pair_offset + len(local_records):06d}"
@@ -514,6 +664,10 @@ class promptir_adv_mix_dataset(Dataset):
                             "aug_index": int(aug_idx),
                         }
                     )
+                    if self.adv_save_density_maps and aug_density_np is not None:
+                        density_path = density_dir / f"{pair_id}.png"
+                        self._save_density_np_with_value_bar(aug_density_np, density_path)
+                        local_records[-1]["density_path"] = str(density_path)
                     progress.update(1)
 
                 produced_base_adv += 1

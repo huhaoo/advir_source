@@ -23,8 +23,12 @@ class ControlMapConfig:
     gaussian_radius: int = 3
     gaussian_sigma: float = 1.25
     gaussian_extra_cells: int = 1
+    gaussian_enable_offset: bool = False
+    gaussian_offset_max: float = 0.5
     lambda_first_order: float = 1e-2
     lambda_second_order: float = 1e-3
+    lambda_offset_first_order: float = 5e-2
+    lambda_offset_second_order: float = 2e-1
     init_mode: str = "zeros"
     init_value: float = 0.0
     init_scale: float = 0.1
@@ -54,8 +58,12 @@ class control_map(nn.Module):
         gaussian_radius = config.gaussian_radius
         gaussian_sigma = config.gaussian_sigma
         gaussian_extra_cells = config.gaussian_extra_cells
+        gaussian_enable_offset = config.gaussian_enable_offset
+        gaussian_offset_max = config.gaussian_offset_max
         lambda_first_order = config.lambda_first_order
         lambda_second_order = config.lambda_second_order
+        lambda_offset_first_order = config.lambda_offset_first_order
+        lambda_offset_second_order = config.lambda_offset_second_order
         init_mode = config.init_mode
         init_value = config.init_value
         init_scale = config.init_scale
@@ -67,6 +75,18 @@ class control_map(nn.Module):
             raise ValueError(f"init_mode must be one of {allowed_init_modes}, got {init_mode!r}")
         if not isinstance(lambda_first_order, (int, float)): raise ValueError(f"lambda_first_order must be numeric, got {type(lambda_first_order)!r}")
         if not isinstance(lambda_second_order, (int, float)): raise ValueError(f"lambda_second_order must be numeric, got {type(lambda_second_order)!r}")
+        if not isinstance(lambda_offset_first_order, (int, float)):
+            raise ValueError(f"lambda_offset_first_order must be numeric, got {type(lambda_offset_first_order)!r}")
+        if not isinstance(lambda_offset_second_order, (int, float)):
+            raise ValueError(f"lambda_offset_second_order must be numeric, got {type(lambda_offset_second_order)!r}")
+        if not isinstance(gaussian_enable_offset, bool):
+            raise ValueError(
+                f"gaussian_enable_offset must be bool, got {type(gaussian_enable_offset)!r}"
+            )
+        if not isinstance(gaussian_offset_max, (int, float)):
+            raise ValueError(f"gaussian_offset_max must be numeric, got {type(gaussian_offset_max)!r}")
+        if float(gaussian_offset_max) < 0:
+            raise ValueError(f"gaussian_offset_max must be >= 0, got {gaussian_offset_max}")
 
         if init_scale < 0:
             raise ValueError(f"init_scale must be non-negative, got {init_scale}")
@@ -81,9 +101,13 @@ class control_map(nn.Module):
         self.gaussian_radius = int(gaussian_radius)
         self.gaussian_sigma = float(gaussian_sigma)
         self.gaussian_extra_cells = int(gaussian_extra_cells)
+        self.gaussian_enable_offset = bool(gaussian_enable_offset)
+        self.gaussian_offset_max = float(gaussian_offset_max)
 
         self.lambda_first_order = float(lambda_first_order)
         self.lambda_second_order = float(lambda_second_order)
+        self.lambda_offset_first_order = float(lambda_offset_first_order)
+        self.lambda_offset_second_order = float(lambda_offset_second_order)
 
         self.init_mode = init_mode
         self.init_value = float(init_value)
@@ -100,9 +124,17 @@ class control_map(nn.Module):
                 gaussian_radius=self.gaussian_radius,
                 gaussian_sigma=self.gaussian_sigma,
                 gaussian_extra_cells=self.gaussian_extra_cells,
+                gaussian_enable_offset=self.gaussian_enable_offset,
+                gaussian_offset_max=self.gaussian_offset_max,
             )
         )
-        self.low_res_param = nn.Parameter(torch.empty(1, 1, low_res_height, low_res_width))
+        self.low_res_param = nn.Parameter(torch.empty(1, 1, self.low_res_height, self.low_res_width))
+        if self.interp_mode == "gaussian" and self.gaussian_enable_offset:
+            self.low_res_offset_xy_param = nn.Parameter(
+                torch.zeros(1, 2, self.low_res_height, self.low_res_width)
+            )
+        else:
+            self.register_parameter("low_res_offset_xy_param", None)
         self.reset_parameters()
 
     @staticmethod
@@ -124,8 +156,12 @@ class control_map(nn.Module):
                 self.low_res_param.uniform_(self.init_value - self.init_scale, self.init_value + self.init_scale)
             elif self.init_mode == "normal": self.low_res_param.normal_(mean=self.init_value, std=self.init_scale)
             else: raise RuntimeError(f"Unsupported init_mode: {self.init_mode}")
+            if self.low_res_offset_xy_param is not None:
+                self.low_res_offset_xy_param.zero_()
 
     def _interpolate(self, x: Tensor) -> Tensor:
+        if self.interp_mode == "gaussian" and self.low_res_offset_xy_param is not None:
+            return self.interpolator(x, gaussian_offset_xy=self.low_res_offset_xy_param)
         return self.interpolator(x)
 
     def forward(self) -> Tensor:
@@ -136,31 +172,92 @@ class control_map(nn.Module):
         """Return learnable low-resolution control map parameter tensor."""
         return self.low_res_param
 
+    def get_low_res_offset_xy_map(self) -> Tensor | None:
+        """Return optional learnable per-kernel Gaussian center offsets in low-res coordinates."""
+        return self.low_res_offset_xy_param
+
+    def project_trainable_parameters_(self) -> None:
+        """Project trainable parameters into configured feasible range."""
+        if self.low_res_offset_xy_param is None:
+            return
+        with torch.no_grad():
+            self.low_res_offset_xy_param.clamp_(
+                -float(self.gaussian_offset_max),
+                float(self.gaussian_offset_max),
+            )
+
     def first_order_loss(self) -> Tensor:
         """L1 regularization of first-order finite differences on low-res parameter map."""
         x = self.low_res_param
-        diff_h, diff_v = x[:, :, :, 1:] - x[:, :, :, :-1], x[:, :, 1:, :] - x[:, :, :-1, :]
-        loss_h = diff_h.abs().mean() if diff_h.numel() > 0 else x.new_tensor(0.0)
-        loss_v = diff_v.abs().mean() if diff_v.numel() > 0 else x.new_tensor(0.0)
-        return loss_h + loss_v
+        return self._first_order_l1(x)
 
     def second_order_loss(self) -> Tensor:
         """L1 regularization of second-order finite differences on low-res parameter map."""
         x = self.low_res_param
-        diff2_h, diff2_v = x[:, :, :, 2:] - 2.0 * x[:, :, :, 1:-1] + x[:, :, :, :-2], x[:, :, 2:, :] - 2.0 * x[:, :, 1:-1, :] + x[:, :, :-2, :]
+        return self._second_order_l1(x)
+
+    @staticmethod
+    def _first_order_l1(x: Tensor) -> Tensor:
+        diff_h = x[:, :, :, 1:] - x[:, :, :, :-1]
+        diff_v = x[:, :, 1:, :] - x[:, :, :-1, :]
+        loss_h = diff_h.abs().mean() if diff_h.numel() > 0 else x.new_tensor(0.0)
+        loss_v = diff_v.abs().mean() if diff_v.numel() > 0 else x.new_tensor(0.0)
+        return loss_h + loss_v
+
+    @staticmethod
+    def _second_order_l1(x: Tensor) -> Tensor:
+        diff2_h = x[:, :, :, 2:] - 2.0 * x[:, :, :, 1:-1] + x[:, :, :, :-2]
+        diff2_v = x[:, :, 2:, :] - 2.0 * x[:, :, 1:-1, :] + x[:, :, :-2, :]
         loss_h = diff2_h.abs().mean() if diff2_h.numel() > 0 else x.new_tensor(0.0)
         loss_v = diff2_v.abs().mean() if diff2_v.numel() > 0 else x.new_tensor(0.0)
         return loss_h + loss_v
 
+    def offset_first_order_loss(self) -> Tensor:
+        """L1 regularization of first-order finite differences on optional offset map."""
+        if self.low_res_offset_xy_param is None:
+            return self.low_res_param.new_tensor(0.0)
+        return self._first_order_l1(self.low_res_offset_xy_param)
+
+    def offset_second_order_loss(self) -> Tensor:
+        """L1 regularization of second-order finite differences on optional offset map."""
+        if self.low_res_offset_xy_param is None:
+            return self.low_res_param.new_tensor(0.0)
+        return self._second_order_l1(self.low_res_offset_xy_param)
+
     def regularization_loss(self) -> Tensor:
-        """Weighted sum of first- and second-order regularization losses."""
-        return self.lambda_first_order * self.first_order_loss() + self.lambda_second_order * self.second_order_loss()
+        """Weighted sum of value-map and optional offset-map regularization losses."""
+        loss_first = self.first_order_loss()
+        loss_second = self.second_order_loss()
+        loss_offset_first = self.offset_first_order_loss()
+        loss_offset_second = self.offset_second_order_loss()
+        return (
+            self.lambda_first_order * loss_first
+            + self.lambda_second_order * loss_second
+            + self.lambda_offset_first_order * loss_offset_first
+            + self.lambda_offset_second_order * loss_offset_second
+        )
 
     def regularization_items(self) -> dict[str, Tensor]:
         """Return individual and total regularization items as tensors."""
-        loss_first, loss_second = self.first_order_loss(), self.second_order_loss()
-        loss_total = self.lambda_first_order * loss_first + self.lambda_second_order * loss_second
-        return {"loss_first_order": loss_first, "loss_second_order": loss_second, "loss_total": loss_total}
+        loss_first = self.first_order_loss()
+        loss_second = self.second_order_loss()
+        loss_offset_first = self.offset_first_order_loss()
+        loss_offset_second = self.offset_second_order_loss()
+        loss_value_total = self.lambda_first_order * loss_first + self.lambda_second_order * loss_second
+        loss_offset_total = (
+            self.lambda_offset_first_order * loss_offset_first
+            + self.lambda_offset_second_order * loss_offset_second
+        )
+        loss_total = loss_value_total + loss_offset_total
+        return {
+            "loss_first_order": loss_first,
+            "loss_second_order": loss_second,
+            "loss_offset_first_order": loss_offset_first,
+            "loss_offset_second_order": loss_offset_second,
+            "loss_value_total": loss_value_total,
+            "loss_offset_total": loss_offset_total,
+            "loss_total": loss_total,
+        }
 
 
 class control_map_router(nn.Module):
@@ -216,8 +313,12 @@ class control_map_router(nn.Module):
                         gaussian_radius=map_config.gaussian_radius,
                         gaussian_sigma=map_config.gaussian_sigma,
                         gaussian_extra_cells=map_config.gaussian_extra_cells,
+                        gaussian_enable_offset=map_config.gaussian_enable_offset,
+                        gaussian_offset_max=map_config.gaussian_offset_max,
                         lambda_first_order=map_config.lambda_first_order,
                         lambda_second_order=map_config.lambda_second_order,
+                        lambda_offset_first_order=map_config.lambda_offset_first_order,
+                        lambda_offset_second_order=map_config.lambda_offset_second_order,
                         init_mode=map_config.init_mode,
                         init_value=map_config.init_value,
                         init_scale=map_config.init_scale,
@@ -252,10 +353,23 @@ class control_map_router(nn.Module):
 
     def regularization_items(self) -> dict[str, Tensor]:
         """Return summed first-order/second-order/total regularization losses."""
-        loss_first = torch.stack([module.first_order_loss() for module in self.maps], dim=0).sum()
-        loss_second = torch.stack([module.second_order_loss() for module in self.maps], dim=0).sum()
-        loss_total = torch.stack([module.regularization_loss() for module in self.maps], dim=0).sum()
-        return {"loss_first_order": loss_first, "loss_second_order": loss_second, "loss_total": loss_total}
+        items = [module.regularization_items() for module in self.maps]
+        loss_first = torch.stack([x["loss_first_order"] for x in items], dim=0).sum()
+        loss_second = torch.stack([x["loss_second_order"] for x in items], dim=0).sum()
+        loss_offset_first = torch.stack([x["loss_offset_first_order"] for x in items], dim=0).sum()
+        loss_offset_second = torch.stack([x["loss_offset_second_order"] for x in items], dim=0).sum()
+        loss_value_total = torch.stack([x["loss_value_total"] for x in items], dim=0).sum()
+        loss_offset_total = torch.stack([x["loss_offset_total"] for x in items], dim=0).sum()
+        loss_total = torch.stack([x["loss_total"] for x in items], dim=0).sum()
+        return {
+            "loss_first_order": loss_first,
+            "loss_second_order": loss_second,
+            "loss_offset_first_order": loss_offset_first,
+            "loss_offset_second_order": loss_offset_second,
+            "loss_value_total": loss_value_total,
+            "loss_offset_total": loss_offset_total,
+            "loss_total": loss_total,
+        }
 
     def regularization_loss(self) -> Tensor:
         """Return total regularization loss summed over all internal maps."""

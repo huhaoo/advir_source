@@ -176,6 +176,10 @@ def build_haze_controller_from_image(
     gaussian_radius: int = 4,
     gaussian_sigma: float = 1.25,
     gaussian_extra_cells: int = 2,
+    gaussian_enable_offset: bool = False,
+    gaussian_offset_max: float = 0.5,
+    gaussian_offset_lambda_first_order: float = 5e-2,
+    gaussian_offset_lambda_second_order: float = 2e-1,
 ) -> haze_degradation:
     _, _, haze_cfg = random_degradation_configs_from_image(
         image,
@@ -183,6 +187,10 @@ def build_haze_controller_from_image(
         gaussian_radius=gaussian_radius,
         gaussian_sigma=gaussian_sigma,
         gaussian_extra_cells=gaussian_extra_cells,
+        gaussian_enable_offset=gaussian_enable_offset,
+        gaussian_offset_max=gaussian_offset_max,
+        gaussian_offset_lambda_first_order=gaussian_offset_lambda_first_order,
+        gaussian_offset_lambda_second_order=gaussian_offset_lambda_second_order,
     )
     if beta_mean is not None:
         haze_cfg.beta_mean = float(beta_mean)
@@ -322,6 +330,7 @@ def run_single_image_adversarial_degradation_search(
             surrogate_obj = surrogate_task - lambda_reg * reg_loss_inner
             (-surrogate_obj).backward()
             optimizer.step()
+            degradation_controller.project_trainable_parameters_()
 
             if record_history:
                 history.append(

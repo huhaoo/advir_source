@@ -5,9 +5,11 @@ import json
 import random
 from pathlib import Path
 
+import h5py
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 import torch
+import torch.nn.functional as F
 from torch import Tensor
 
 try:
@@ -46,25 +48,25 @@ def _save_rgb_tensor(image: Tensor, path: Path) -> None:
     Image.fromarray((image_np * 255.0 + 0.5).astype(np.uint8), mode="RGB").save(path)
 
 
-def _save_density_tensor(density: Tensor, path: Path) -> None:
-    density_bchw, _ = _ensure_bchw(density)
-    if density_bchw.shape[1] != 1:
-        density_bchw = density_bchw.mean(dim=1, keepdim=True)
+def _save_scalar_tensor(tensor: Tensor, path: Path, title: str) -> None:
+    tensor_bchw, _ = _ensure_bchw(tensor)
+    if tensor_bchw.shape[1] != 1:
+        tensor_bchw = tensor_bchw.mean(dim=1, keepdim=True)
 
-    rho = density_bchw[0, 0].detach().cpu().float().numpy()
-    rho_min = float(rho.min())
-    rho_max = float(rho.max())
-    rho_mean = float(rho.mean())
-    if rho_max > rho_min:
-        rho_norm = (rho - rho_min) / (rho_max - rho_min)
+    scalar_map = tensor_bchw[0, 0].detach().cpu().float().numpy()
+    v_min = float(scalar_map.min())
+    v_max = float(scalar_map.max())
+    v_mean = float(scalar_map.mean())
+    if v_max > v_min:
+        scalar_norm = (scalar_map - v_min) / (v_max - v_min)
     else:
-        rho_norm = np.zeros_like(rho, dtype=np.float32)
+        scalar_norm = np.zeros_like(scalar_map, dtype=np.float32)
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    density_img = Image.fromarray((rho_norm * 255.0 + 0.5).astype(np.uint8), mode="L").convert("RGB")
-    draw = ImageDraw.Draw(density_img)
+    scalar_img = Image.fromarray((scalar_norm * 255.0 + 0.5).astype(np.uint8), mode="L").convert("RGB")
+    draw = ImageDraw.Draw(scalar_img)
     font = ImageFont.load_default()
-    text = f"min={rho_min:.4f} max={rho_max:.4f} mean={rho_mean:.4f}"
+    text = f"{title} min={v_min:.4f} max={v_max:.4f} mean={v_mean:.4f}"
 
     text_bbox = draw.textbbox((0, 0), text, font=font)
     text_w = text_bbox[2] - text_bbox[0]
@@ -74,7 +76,11 @@ def _save_density_tensor(density: Tensor, path: Path) -> None:
     draw.rectangle(rect, fill=(0, 0, 0))
     draw.text((pad, pad), text, fill=(255, 255, 255), font=font)
 
-    density_img.save(path)
+    scalar_img.save(path)
+
+
+def _save_density_tensor(density: Tensor, path: Path) -> None:
+    _save_scalar_tensor(density, path, title="rho")
 
 
 def _collect_train_clear_images(manifest_path: Path, dataset_root: Path) -> list[Path]:
@@ -115,8 +121,70 @@ def _collect_train_clear_images(manifest_path: Path, dataset_root: Path) -> list
     return clear_paths
 
 
-def _estimate_distance_from_image(image_bchw: Tensor) -> Tensor:
-    # Distance proxy is computed from luminance only, keeping API deg(Igt)->Ideg independent from depth files.
+def _load_distance_from_mat(depth_path: Path, image_hw: tuple[int, int]) -> Tensor:
+    with h5py.File(depth_path, "r") as mat:
+        if "depth" not in mat:
+            raise KeyError(f"key 'depth' not found in {depth_path}")
+        depth_np = mat["depth"][()]
+
+    depth = torch.from_numpy(depth_np.copy()).float().unsqueeze(0).unsqueeze(0)
+    raw_h, raw_w = int(depth.shape[-2]), int(depth.shape[-1])
+    h, w = int(image_hw[0]), int(image_hw[1])
+
+    if (raw_h, raw_w) == (w, h):
+        depth = depth.transpose(-2, -1).contiguous()
+    if depth.shape[-2:] != (h, w):
+        depth = F.interpolate(depth, size=(h, w), mode="bilinear", align_corners=False)
+    return depth
+
+
+def _apply_crop_from_info(image_bchw: Tensor, crop_info: dict[str, int]) -> Tensor:
+    image_bchw, _ = _ensure_bchw(image_bchw)
+    _, _, h, w = image_bchw.shape
+    top = int(crop_info.get("top", 0))
+    bottom = int(crop_info.get("bottom", 0))
+    left = int(crop_info.get("left", 0))
+    right = int(crop_info.get("right", 0))
+
+    if top < 0 or bottom < 0 or left < 0 or right < 0:
+        raise ValueError(f"crop values must be >= 0, got {crop_info}")
+    if top + bottom >= h or left + right >= w:
+        raise ValueError(f"invalid crop_info for shape {(h, w)}: {crop_info}")
+
+    h_end = h - bottom if bottom > 0 else h
+    w_end = w - right if right > 0 else w
+    return image_bchw[:, :, top:h_end, left:w_end].contiguous()
+
+
+def _estimate_distance_from_image(
+    image_bchw: Tensor,
+    depth_map: Tensor | None = None,
+) -> Tensor:
+    image_bchw, _ = _ensure_bchw(image_bchw)
+
+    if depth_map is not None:
+        depth_bchw, _ = _ensure_bchw(depth_map)
+        if depth_bchw.shape[0] != image_bchw.shape[0]:
+            raise ValueError(
+                f"depth batch mismatch: depth={depth_bchw.shape[0]}, image={image_bchw.shape[0]}"
+            )
+        if depth_bchw.shape[2:] != image_bchw.shape[2:]:
+            depth_bchw = F.interpolate(
+                depth_bchw,
+                size=(int(image_bchw.shape[2]), int(image_bchw.shape[3])),
+                mode="bilinear",
+                align_corners=False,
+            )
+        if depth_bchw.shape[1] != 1:
+            depth_bchw = depth_bchw.mean(dim=1, keepdim=True)
+
+        depth_bchw = depth_bchw.clamp_min(0.0)
+        dmin = depth_bchw.amin(dim=(2, 3), keepdim=True)
+        dmax = depth_bchw.amax(dim=(2, 3), keepdim=True)
+        norm = (depth_bchw - dmin) / (dmax - dmin + 1e-6)
+        return 0.1 + 2.8 * norm
+
+    # Fallback to luminance proxy when depth is unavailable.
     if image_bchw.shape[1] == 3:
         gray = 0.299 * image_bchw[:, 0:1] + 0.587 * image_bchw[:, 1:2] + 0.114 * image_bchw[:, 2:3]
     else:
@@ -240,7 +308,7 @@ def adv(
             low_res_width=low_w,
             high_res_height=h,
             high_res_width=w,
-            mode="bicubic",
+            mode="gaussian",
             align_corners=False,
         )
     ).to(device=fixed_grad.device)
@@ -268,11 +336,134 @@ def adv(
     return rho_high.relu()
 
 
+def proj(
+    target: Tensor | tuple[Tensor, ...] | list[Tensor],
+    lam1: float,
+    lam2: float,
+    size: tuple[int, int],
+    offset: bool = False,
+    offset_max: float = 0.5,
+    offset_lam1: float = 0.01,
+    offset_lam2: float = 0.04,
+) -> Tensor:
+    """Project a target map to a smooth output map.
+
+    Objective:
+        minimize |out - target|^2 + lam1 * R1(out) + lam2 * R2(out)
+                + offset_lam1 * R1(offset) + offset_lam2 * R2(offset)
+    where R1/R2 are first/second-order smoothness regularizers.
+
+    The output mean is constrained to match target mean by additive projection.
+    When ``offset=True``, gaussian interpolation enables learnable x/y offsets.
+    """
+    if not isinstance(lam1, (int, float)):
+        raise ValueError(f"lam1 must be numeric, got {type(lam1)!r}")
+    if not isinstance(lam2, (int, float)):
+        raise ValueError(f"lam2 must be numeric, got {type(lam2)!r}")
+    if float(lam1) < 0:
+        raise ValueError(f"lam1 must be >= 0, got {lam1}")
+    if float(lam2) < 0:
+        raise ValueError(f"lam2 must be >= 0, got {lam2}")
+    if not isinstance(offset, bool):
+        raise ValueError(f"offset must be bool, got {type(offset)!r}")
+    if not isinstance(offset_max, (int, float)):
+        raise ValueError(f"offset_max must be numeric, got {type(offset_max)!r}")
+    if float(offset_max) < 0:
+        raise ValueError(f"offset_max must be >= 0, got {offset_max}")
+    if not isinstance(offset_lam1, (int, float)):
+        raise ValueError(f"offset_lam1 must be numeric, got {type(offset_lam1)!r}")
+    if not isinstance(offset_lam2, (int, float)):
+        raise ValueError(f"offset_lam2 must be numeric, got {type(offset_lam2)!r}")
+    if float(offset_lam1) < 0:
+        raise ValueError(f"offset_lam1 must be >= 0, got {offset_lam1}")
+    if float(offset_lam2) < 0:
+        raise ValueError(f"offset_lam2 must be >= 0, got {offset_lam2}")
+    if not isinstance(size, tuple) or len(size) != 2:
+        raise ValueError(f"size must be a tuple(height, width), got {size!r}")
+    low_h, low_w = int(size[0]), int(size[1])
+    if low_h <= 0 or low_w <= 0:
+        raise ValueError(f"size values must be positive, got {(low_h, low_w)}")
+
+    target_first = target
+    if isinstance(target, (tuple, list)):
+        if len(target) == 0:
+            raise ValueError("target tuple/list must be non-empty")
+        target_first = target[0]
+    if not isinstance(target_first, torch.Tensor):
+        raise ValueError(f"target first item must be torch.Tensor, got {type(target_first)!r}")
+
+    fixed_target, _ = _ensure_bchw(target_first)
+    if fixed_target.shape[1] != 1:
+        fixed_target = fixed_target.mean(dim=1, keepdim=True)
+    fixed_target = fixed_target.detach()
+
+    b, _, h, w = fixed_target.shape
+    low_res_param = torch.nn.Parameter(torch.zeros((1, 1, low_h, low_w), dtype=fixed_target.dtype, device=fixed_target.device))
+    low_res_offset_xy_param: torch.nn.Parameter | None = None
+    optimizer_params: list[torch.nn.Parameter] = [low_res_param]
+    if offset:
+        low_res_offset_xy_param = torch.nn.Parameter(
+            torch.zeros((1, 2, low_h, low_w), dtype=fixed_target.dtype, device=fixed_target.device)
+        )
+        optimizer_params.append(low_res_offset_xy_param)
+
+    optimizer = torch.optim.Adam(optimizer_params, lr=1e-3)
+    target_mean = fixed_target.mean(dim=(2, 3), keepdim=True)
+    highres_interpolator = control_map_interpolator(
+        InterpolationFieldConfig(
+            low_res_height=low_h,
+            low_res_width=low_w,
+            high_res_height=h,
+            high_res_width=w,
+            mode="gaussian",
+            align_corners=False,
+            gaussian_enable_offset=offset,
+            gaussian_offset_max=float(offset_max),
+        )
+    ).to(device=fixed_target.device)
+
+    for _ in range(256):
+        optimizer.zero_grad(set_to_none=True)
+        if low_res_offset_xy_param is None:
+            out_high = highres_interpolator(low_res_param).expand(b, 1, h, w)
+        else:
+            out_high = highres_interpolator(low_res_param, gaussian_offset_xy=low_res_offset_xy_param).expand(b, 1, h, w)
+        current_mean = out_high.mean(dim=(2, 3), keepdim=True)
+        out_high = out_high + (target_mean - current_mean)
+
+        data_loss = (out_high - fixed_target).pow(2).mean()
+        reg_first = _first_order_regularization(out_high)
+        reg_second = _second_order_regularization(out_high)
+        reg_offset = out_high.new_tensor(0.0)
+        if low_res_offset_xy_param is not None:
+            reg_offset = (
+                float(offset_lam1) * _first_order_regularization(low_res_offset_xy_param)
+                + float(offset_lam2) * _second_order_regularization(low_res_offset_xy_param)
+            )
+        proj_obj = data_loss + float(lam1) * reg_first + float(lam2) * reg_second + reg_offset
+        proj_obj.backward()
+        optimizer.step()
+        if low_res_offset_xy_param is not None:
+            with torch.no_grad():
+                low_res_offset_xy_param.clamp_(-float(offset_max), float(offset_max))
+
+    with torch.no_grad():
+        if low_res_offset_xy_param is None:
+            out_high = highres_interpolator(low_res_param).expand(b, 1, h, w)
+        else:
+            out_high = highres_interpolator(low_res_param, gaussian_offset_xy=low_res_offset_xy_param).expand(b, 1, h, w)
+        current_mean = out_high.mean(dim=(2, 3), keepdim=True)
+        out_high = out_high + (target_mean - current_mean)
+    return out_high
+
+
 def density(i_gt: Tensor) -> Tensor:
     """Implementation interface: return fog density map rho with shape (B,1,H,W).
 
     Current default uses a deterministic 2D function with:
-    - amplitude upper-bounded by a random amp_max in [0.3, 0.5] via sigmoid scaling
+    - edge-heavy base map from deformed ellipse geometry
+    - linear normalization (no sigmoid/proj)
+    - random range remap with a+-b where a in [0.2, 0.4], b in [0.025, 0.1]
     - higher density near borders
     - lower density near image center
     - adaptive ellipse-like contour, with inward notches at long-side centers
@@ -283,71 +474,46 @@ def density(i_gt: Tensor) -> Tensor:
     i_gt_bchw, _ = _ensure_bchw(i_gt)
     b, _, h, w = i_gt_bchw.shape
 
-    yy = torch.linspace(-1.0, 1.0, steps=h, dtype=i_gt_bchw.dtype, device=i_gt_bchw.device).view(1, 1, h, 1)
-    xx = torch.linspace(-1.0, 1.0, steps=w, dtype=i_gt_bchw.dtype, device=i_gt_bchw.device).view(1, 1, 1, w)
-    xx = xx.expand(b, 1, h, w)
-    yy = yy.expand(b, 1, h, w)
+    dtype, device = i_gt_bchw.dtype, i_gt_bchw.device
+    yy = torch.linspace(-1.0, 1.0, steps=h, dtype=dtype, device=device).view(1, 1, h, 1).expand(b, 1, h, w)
+    xx = torch.linspace(-1.0, 1.0, steps=w, dtype=dtype, device=device).view(1, 1, 1, w).expand(b, 1, h, w)
 
-    # Base adaptive ellipse metric: it naturally adapts to width/height.
-    q_base = torch.sqrt(xx * xx + yy * yy + 1e-12)
+    edge_inset = float(torch.empty((), dtype=dtype, device=device).uniform_(0.02, 0.14).item())
+    notch_strength = float(torch.empty((), dtype=dtype, device=device).uniform_(0.10, 0.32).item())
+    sigma_t, sigma_n = 0.22, 0.14
+    tangent, normal = (xx, yy) if w >= h else (yy, xx)
 
-    # Inward notches at long-side centers:
-    # - if width >= height: long sides are top/bottom
-    # - else: long sides are left/right
-    # Random profile parameters (sampled once per density call).
-    # 1) edge_inset: inward offset from the edge-touch contour (controls distance to border).
-    # 2) q_temp: sigmoid temperature (controls fade speed; smaller = steeper).
-    # 3) notch_strength: inward notch magnitude at long-side centers.
-    # 4) amp_max: random upper-bound amplitude for rho.
-    edge_inset = float(torch.empty((), dtype=i_gt_bchw.dtype, device=i_gt_bchw.device).uniform_(0.02, 0.14).item())
-    q_temp = float(torch.empty((), dtype=i_gt_bchw.dtype, device=i_gt_bchw.device).uniform_(0.2, 0.8).item())
-    notch_strength = float(torch.empty((), dtype=i_gt_bchw.dtype, device=i_gt_bchw.device).uniform_(0.10, 0.32).item())
-    amp_max = float(torch.empty((), dtype=i_gt_bchw.dtype, device=i_gt_bchw.device).uniform_(0.1, 0.2).item())
+    notch = torch.exp(-(tangent * tangent) / (2.0 * sigma_t * sigma_t))
+    notch = notch * (
+        torch.exp(-((normal + 1.0) ** 2) / (2.0 * sigma_n * sigma_n))
+        + torch.exp(-((normal - 1.0) ** 2) / (2.0 * sigma_n * sigma_n))
+    )
+    q_deformed = torch.sqrt(xx * xx + yy * yy + 1e-12) + notch_strength * notch
 
-    if w >= h:
-        notch_sigma_tangent = 0.22
-        notch_sigma_normal = 0.14
-        notch_top = torch.exp(-(xx * xx) / (2.0 * notch_sigma_tangent * notch_sigma_tangent)) * torch.exp(
-            -((yy + 1.0) ** 2) / (2.0 * notch_sigma_normal * notch_sigma_normal)
-        )
-        notch_bottom = torch.exp(-(xx * xx) / (2.0 * notch_sigma_tangent * notch_sigma_tangent)) * torch.exp(
-            -((yy - 1.0) ** 2) / (2.0 * notch_sigma_normal * notch_sigma_normal)
-        )
-        notch = notch_strength * (notch_top + notch_bottom)
-    else:
-        notch_sigma_tangent = 0.22
-        notch_sigma_normal = 0.14
-        notch_left = torch.exp(-(yy * yy) / (2.0 * notch_sigma_tangent * notch_sigma_tangent)) * torch.exp(
-            -((xx + 1.0) ** 2) / (2.0 * notch_sigma_normal * notch_sigma_normal)
-        )
-        notch_right = torch.exp(-(yy * yy) / (2.0 * notch_sigma_tangent * notch_sigma_tangent)) * torch.exp(
-            -((xx - 1.0) ** 2) / (2.0 * notch_sigma_normal * notch_sigma_normal)
-        )
-        notch = notch_strength * (notch_left + notch_right)
-    q_deformed = q_base + notch
-
-    # Compute an adaptive edge-touch level so one contour line touches all four borders.
     top_min = q_deformed[:, :, 0, :].amin(dim=-1, keepdim=True)
     bottom_min = q_deformed[:, :, -1, :].amin(dim=-1, keepdim=True)
     left_min = q_deformed[:, :, :, 0].amin(dim=-1, keepdim=True)
     right_min = q_deformed[:, :, :, -1].amin(dim=-1, keepdim=True)
-    q_touch = torch.maximum(torch.maximum(top_min, bottom_min), torch.maximum(left_min, right_min)).unsqueeze(-1)
+    rho_score = q_deformed - (
+        torch.maximum(torch.maximum(top_min, bottom_min), torch.maximum(left_min, right_min)).unsqueeze(-1) - edge_inset
+    )
 
-    # Monotonic outer->inner fade:
-    # larger q_deformed (outer side) -> larger density, smaller q_deformed (inner side) -> smaller density.
-    q_mid = q_touch - edge_inset
-    # Use sigmoid profile and scale it to a random max in [0.3, 0.5], without clamp.
-    rho_sigmoid = torch.sigmoid((q_deformed - q_mid) / q_temp)
-    rho_sigmoid_max = rho_sigmoid.amax(dim=(2, 3), keepdim=True).clamp_min(1e-12)
-    rho = (rho_sigmoid / rho_sigmoid_max)
-    # rho=adv(rho, 1e-3, 2e-3,rho.shape[-2:],amp_max)
-    rho=adv(rho, 1e-4, 2e-4,(32, 32),amp_max)
-    return rho
+    score_min = rho_score.amin(dim=(2, 3), keepdim=True)
+    score_delta = rho_score.amax(dim=(2, 3), keepdim=True) - score_min
+    rho_norm = (rho_score - score_min) / score_delta.clamp_min(1e-12)
+    rho_norm = torch.where(score_delta > 1e-12, rho_norm, torch.full_like(rho_norm, 0.5))
+
+    a = torch.empty((b, 1, 1, 1), dtype=dtype, device=device).uniform_(0.2, 0.4)
+    b_span = torch.empty((b, 1, 1, 1), dtype=dtype, device=device).uniform_(0.05, 0.15)
+    res = (a - b_span) + (2.0 * b_span) * rho_norm
+    # res = proj(res, 1e-3, 5e-3, size=(32, 32), offset=True)
+    return res
 
 
 def deg(
     i_gt: Tensor,
     rho: Tensor | None = None,
+    distance_map: Tensor | None = None,
 ) -> Tensor:
     """External interface: deg(Igt)->Ideg, implemented via density map."""
     i_gt_bchw, was_3d = _ensure_bchw(i_gt)
@@ -355,6 +521,26 @@ def deg(
 
     if rho is None:
         rho = density(i_gt=i_gt_bchw)
+    _, _, transmission = _prepare_degradation_components(
+        i_gt_bchw=i_gt_bchw,
+        rho=rho,
+        distance_map=distance_map,
+    )
+    airlight = torch.ones_like(i_gt_bchw)
+    i_deg = i_gt_bchw * transmission + airlight * (1.0 - transmission)
+    i_deg = i_deg.clamp(0.0, 1.0)
+    if was_3d:
+        return i_deg[0]
+    return i_deg
+
+
+def _prepare_degradation_components(
+    i_gt_bchw: Tensor,
+    rho: Tensor,
+    distance_map: Tensor | None = None,
+) -> tuple[Tensor, Tensor, Tensor]:
+    """Prepare rho, distance, and transmission maps used by deg."""
+    i_gt_bchw, _ = _ensure_bchw(i_gt_bchw)
     rho_bchw, _ = _ensure_bchw(rho)
 
     if rho_bchw.shape[0] != i_gt_bchw.shape[0]:
@@ -378,14 +564,9 @@ def deg(
     if rho_bchw.shape[1] == 1 and i_gt_bchw.shape[1] > 1:
         rho_bchw = rho_bchw.expand(-1, i_gt_bchw.shape[1], -1, -1)
 
-    distance_map = _estimate_distance_from_image(i_gt_bchw).to(i_gt_bchw.device)
-    transmission = torch.exp(-rho_bchw.clamp_min(0.0) * distance_map)
-    airlight = torch.ones_like(i_gt_bchw)
-    i_deg = i_gt_bchw * transmission + airlight * (1.0 - transmission)
-    i_deg = i_deg.clamp(0.0, 1.0)
-    if was_3d:
-        return i_deg[0]
-    return i_deg
+    distance_used = _estimate_distance_from_image(i_gt_bchw, depth_map=distance_map).to(i_gt_bchw.device)
+    transmission = torch.exp(-rho_bchw.clamp_min(0.0) * distance_used)
+    return rho_bchw, distance_used, transmission
 
 
 def generate_haze_dataset_from_train(
@@ -415,18 +596,42 @@ def generate_haze_dataset_from_train(
     input_dir = output_root / "input"
     target_dir = output_root / "target"
     density_dir = output_root / "density"
+    transmission_dir = output_root / "transmission"
+    distance_dir = output_root / "distance"
     output_root.mkdir(parents=True, exist_ok=True)
     input_dir.mkdir(parents=True, exist_ok=True)
     target_dir.mkdir(parents=True, exist_ok=True)
     density_dir.mkdir(parents=True, exist_ok=True)
+    transmission_dir.mkdir(parents=True, exist_ok=True)
+    distance_dir.mkdir(parents=True, exist_ok=True)
 
     records: list[dict[str, object]] = []
+    depth_root = dataset_root / "haze" / "reside_ots" / "depth"
     for idx, clear_path in enumerate(selected):
-        i_gt = _load_rgb_tensor(clear_path)
-        i_gt, crop_info = _random_border_crop(i_gt, rng=rng, max_border_crop=max_border_crop)
+        i_gt_full = _load_rgb_tensor(clear_path)
+        distance_full: Tensor | None = None
+        distance_source = "luminance_proxy"
+        depth_path = depth_root / f"{clear_path.stem}.mat"
+        if depth_path.exists():
+            distance_full = _load_distance_from_mat(
+                depth_path=depth_path,
+                image_hw=(int(i_gt_full.shape[-2]), int(i_gt_full.shape[-1])),
+            )
+            distance_source = "depth_mat"
+        i_gt, crop_info = _random_border_crop(i_gt_full, rng=rng, max_border_crop=max_border_crop)
+        distance_map: Tensor | None = None
+        if distance_full is not None:
+            distance_map = _apply_crop_from_info(distance_full, crop_info=crop_info)
+
         # Use exactly one density() call for consistency when density is stochastic.
         rho = density(i_gt=i_gt).detach().clone()
-        i_deg = deg(i_gt=i_gt, rho=rho)
+        _, distance_used, transmission = _prepare_degradation_components(
+            i_gt_bchw=i_gt,
+            rho=rho,
+            distance_map=distance_map,
+        )
+        airlight = torch.ones_like(i_gt)
+        i_deg = (i_gt * transmission + airlight * (1.0 - transmission)).clamp(0.0, 1.0)
 
         i_deg_bchw, _ = _ensure_bchw(i_deg)
         if i_deg_bchw.shape != i_gt.shape:
@@ -437,8 +642,12 @@ def generate_haze_dataset_from_train(
         image_id = f"{idx:06d}"
         input_path = input_dir / f"{image_id}.png"
         target_path = target_dir / f"{image_id}.png"
+        transmission_path = transmission_dir / f"{image_id}.png"
+        distance_path = distance_dir / f"{image_id}.png"
         _save_rgb_tensor(i_deg_bchw, input_path)
         _save_rgb_tensor(i_gt, target_path)
+        _save_scalar_tensor(transmission, transmission_path, title="transmission")
+        _save_scalar_tensor(distance_used, distance_path, title="distance")
 
         density_path: Path | None = None
         if idx < density_plot_count:
@@ -451,7 +660,11 @@ def generate_haze_dataset_from_train(
                 "input_path": str(input_path),
                 "target_path": str(target_path),
                 "source_clear_path": str(clear_path),
+                "depth_path": str(depth_path) if depth_path.exists() else None,
+                "distance_source": distance_source,
                 "crop": crop_info,
+                "transmission_path": str(transmission_path),
+                "distance_path": str(distance_path),
                 "density_path": None if density_path is None else str(density_path),
                 "density_sample_calls": 1,
             }
@@ -467,6 +680,10 @@ def generate_haze_dataset_from_train(
     summary = {
         "count": len(records),
         "unique_source_clears": len({r["source_clear_path"] for r in records}),
+        "depth_distance_count": int(sum(1 for r in records if r["distance_source"] == "depth_mat")),
+        "luminance_distance_count": int(sum(1 for r in records if r["distance_source"] != "depth_mat")),
+        "transmission_count": len(records),
+        "distance_map_count": len(records),
         "output_root": str(output_root),
         "interface": "deg(Igt)->Ideg",
         "implementation_interface": "density(Igt)->rho",
