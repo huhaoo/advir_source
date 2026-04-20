@@ -414,7 +414,7 @@ def parse_args() -> argparse.Namespace:
         help="Per-sample random gaussian extra-cells maximum.",
     )
     parser.add_argument("--fixed_output_mean_min", type=float, default=0.1, help="Min fixed output mean.")
-    parser.add_argument("--fixed_output_mean_max", type=float, default=0.2, help="Max fixed output mean.")
+    parser.add_argument("--fixed_output_mean_max", type=float, default=0.5, help="Max fixed output mean.")
     parser.add_argument("--density_plot_count", type=int, default=32, help="Number of density visualizations to save.")
     parser.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"], help="Execution device.")
     return parser.parse_args()

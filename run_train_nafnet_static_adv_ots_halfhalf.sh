@@ -17,10 +17,10 @@ conda run -n promptir --no-capture-output \
   --num_workers "${NUM_WORKERS:-8}" \
   --num_gpus "${NUM_GPUS:-3}" \
   --ckpt_dir "${CKPT_DIR:-/home/huhao/adv_ir/exp/train_ckpt_nafnet_random_adv_ots_s1_64_1024_d8_halfhalf}" \
+  --wandb_run_name "source_nafnet_static_adv_ots_halfhalf" \
   --adv_ratio 0.5 \
   --adv_samples_per_resample "${ADV_SAMPLES_PER_RESAMPLE:-16384}" \
   --adv_cache_root "${ADV_CACHE_ROOT:-/home/huhao/adv_ir/dataset_ours/random_adv_ots_s1_64_1024_d8}" \
   --degradation_size "${DEGRADATION_SIZE:-16384}" \
   --auto_resume
   # --wblogger "${WBLOGGER:-none}"
-

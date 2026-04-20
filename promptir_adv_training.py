@@ -145,6 +145,17 @@ class promptir_adv_mix_dataset(Dataset):
         shards_dir.mkdir(parents=True, exist_ok=True)
         return epoch_dir, input_dir, target_dir
 
+    def _cleanup_old_resample_dirs(self, keep_epoch: int) -> None:
+        keep_name = f"resample_epoch_{int(keep_epoch):04d}"
+        if not self.shared_cache_dir.exists():
+            return
+        for path in self.shared_cache_dir.glob("resample_epoch_*"):
+            if not path.is_dir():
+                continue
+            if path.name == keep_name:
+                continue
+            shutil.rmtree(path, ignore_errors=True)
+
     def _epoch_dir(self, epoch: int) -> Path:
         return self.shared_cache_dir / f"resample_epoch_{int(epoch):04d}"
 
@@ -495,6 +506,10 @@ class promptir_adv_mix_dataset(Dataset):
         self.adv_records = self._load_records_from_manifest(epoch=epoch)
         self._last_resampled_epoch = epoch
 
+        if rank == 0:
+            self._cleanup_old_resample_dirs(keep_epoch=epoch)
+        dist.barrier()
+
     def resample_adversarial(
         self,
         epoch: int,
@@ -521,6 +536,7 @@ class promptir_adv_mix_dataset(Dataset):
         self.adv_records = new_records
         self._last_resampled_epoch = epoch
         self._write_manifest(epoch=epoch, records=new_records)
+        self._cleanup_old_resample_dirs(keep_epoch=epoch)
         print(
             f"[AdvMixHazeOnly] epoch={epoch} base={self.base_len} adv_target={self.adv_len} adv_ready={len(self.adv_records)} "
             f"k={self.adv_aug_k} resample_every={self.adv_resample_epochs} "
@@ -619,10 +635,8 @@ class promptir_adv_mix_dataset(Dataset):
                     steps2=self.adv_steps2,
                     step_size=self.adv_step_size,
                     lambda_reg=self.adv_lambda_reg,
-                    rain_topk=1,
                     save_dir=None,
                     record_history=False,
-                    save_visual_maps=False,
                     allow_promptir_trainable_params=False,
                     promptir_patch_size=self.adv_promptir_patch_size,
                     promptir_patch_overlap=self.adv_promptir_patch_overlap,

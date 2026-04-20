@@ -19,7 +19,7 @@ except ModuleNotFoundError:
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATASET_ROOT = PROJECT_ROOT / "dataset"
-DEFAULT_TRAIN_MANIFEST = PROJECT_ROOT / "PromptIR" / "data_dir" / "hazy" / "hazy_outside_train.txt"
+DEFAULT_TRAIN_MANIFEST = PROJECT_ROOT / "PromptIR" / "data_dir" / "hazy" / "hazy_outside_test.txt"
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "tmp_demo" / "haze_dataset_builder"
 FIXED_GRAD_TARGET_STD = 9.64294260850096e-05
 
@@ -39,6 +39,30 @@ def _ensure_bchw(image: Tensor) -> tuple[Tensor, bool]:
 def _load_rgb_tensor(path: Path) -> Tensor:
     img_np = np.asarray(Image.open(path).convert("RGB"), dtype=np.float32) / 255.0
     return torch.from_numpy(img_np).permute(2, 0, 1).unsqueeze(0).contiguous()
+
+
+def _resolve_runtime_device(device: str) -> torch.device:
+    if not isinstance(device, str) or device.strip() == "":
+        raise ValueError(f"device must be a non-empty string, got {device!r}")
+
+    device_name = device.strip().lower()
+    if device_name == "auto":
+        return torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    if device_name == "cpu":
+        return torch.device("cpu")
+    if device_name.startswith("cuda"):
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA device requested but torch.cuda.is_available() is False")
+        try:
+            resolved = torch.device(device_name)
+        except Exception as exc:
+            raise ValueError(f"invalid CUDA device format: {device}") from exc
+        if resolved.index is not None and resolved.index >= torch.cuda.device_count():
+            raise ValueError(
+                f"requested CUDA index {resolved.index} out of range (device_count={torch.cuda.device_count()})"
+            )
+        return resolved
+    raise ValueError(f"unsupported device: {device!r}. use one of: cpu, cuda, cuda:N, auto")
 
 
 def _save_rgb_tensor(image: Tensor, path: Path) -> None:
@@ -574,6 +598,7 @@ def generate_haze_dataset_from_train(
     output_root: Path,
     manifest_path: Path = DEFAULT_TRAIN_MANIFEST,
     dataset_root: Path = DEFAULT_DATASET_ROOT,
+    device: str = "cpu",
     seed: int = 123,
     max_border_crop: int = 16,
     density_plot_count: int | None = None,
@@ -582,6 +607,7 @@ def generate_haze_dataset_from_train(
         raise ValueError(f"n must be > 0, got {n}")
 
     rng = random.Random(seed)
+    runtime_device = _resolve_runtime_device(device)
     clear_paths = _collect_train_clear_images(manifest_path=manifest_path, dataset_root=dataset_root)
 
     if len(clear_paths) >= n:
@@ -608,7 +634,7 @@ def generate_haze_dataset_from_train(
     records: list[dict[str, object]] = []
     depth_root = dataset_root / "haze" / "reside_ots" / "depth"
     for idx, clear_path in enumerate(selected):
-        i_gt_full = _load_rgb_tensor(clear_path)
+        i_gt_full = _load_rgb_tensor(clear_path).to(device=runtime_device)
         distance_full: Tensor | None = None
         distance_source = "luminance_proxy"
         depth_path = depth_root / f"{clear_path.stem}.mat"
@@ -616,7 +642,7 @@ def generate_haze_dataset_from_train(
             distance_full = _load_distance_from_mat(
                 depth_path=depth_path,
                 image_hw=(int(i_gt_full.shape[-2]), int(i_gt_full.shape[-1])),
-            )
+            ).to(device=runtime_device)
             distance_source = "depth_mat"
         i_gt, crop_info = _random_border_crop(i_gt_full, rng=rng, max_border_crop=max_border_crop)
         distance_map: Tensor | None = None
@@ -675,6 +701,8 @@ def generate_haze_dataset_from_train(
         "seed": seed,
         "manifest_path": str(manifest_path),
         "dataset_root": str(dataset_root),
+        "requested_device": str(device),
+        "resolved_device": str(runtime_device),
         "records": records,
     }
     summary = {
@@ -689,6 +717,8 @@ def generate_haze_dataset_from_train(
         "implementation_interface": "density(Igt)->rho",
         "max_border_crop": int(max_border_crop),
         "density_plot_count": int(density_plot_count),
+        "requested_device": str(device),
+        "resolved_device": str(runtime_device),
     }
 
     (output_root / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -702,6 +732,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output_root", type=str, default=str(DEFAULT_OUTPUT_ROOT), help="Output root path.")
     parser.add_argument("--manifest_path", type=str, default=str(DEFAULT_TRAIN_MANIFEST), help="Train manifest path.")
     parser.add_argument("--dataset_root", type=str, default=str(DEFAULT_DATASET_ROOT), help="Dataset root path.")
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cpu",
+        help="compute device: cpu, cuda, cuda:N, or auto",
+    )
     parser.add_argument("--seed", type=int, default=123, help="Random seed for source sampling.")
     parser.add_argument(
         "--max_border_crop",
@@ -726,6 +762,7 @@ def main() -> None:
         output_root=Path(args.output_root),
         manifest_path=Path(args.manifest_path),
         dataset_root=Path(args.dataset_root),
+        device=str(args.device),
         seed=int(args.seed),
         max_border_crop=int(args.max_border_crop),
         density_plot_count=None if int(args.density_plot_count) < 0 else int(args.density_plot_count),

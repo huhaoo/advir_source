@@ -1,6 +1,6 @@
 module_document_compact
 
-last_update: 2026-04-10
+last_update: 2026-04-19
 workspace_root: /home/huhao/adv_ir
 
 purpose:
@@ -51,19 +51,35 @@ outputs:
 module_name: degradation
 location: /home/huhao/adv_ir/source/degradation.py
 kind: module
-summary: noise/rain/haze degradation operators and regularization interfaces; supports parameterized interpolation override for control maps.
+summary: haze-only degradation operator + differentiable motion-blur operator + random haze config sampler; supports parameterized interpolation override for control maps.
 run: imported by training/attack scripts
 outputs: runtime tensors and regularization terms
 notes:
 - interpolation parameters are explicit function arguments:
-  - random_degradation_configs_from_image(image, interp_mode, gaussian_radius, gaussian_sigma, gaussian_extra_cells)
+  - random_haze_degradation_config_from_image(image, interp_mode, gaussian_radius, gaussian_sigma, gaussian_extra_cells)
+  - random_degradation_configs_from_image(...) is kept as a haze-only alias for compatibility
   - default values keep current behavior: bicubic + align_corners=False path
+- differentiable motion blur module:
+  - motion_blur_degradation(MotionBlurDegradationConfig(...))
+  - Haze-style adversarial controller with internal trainable dx map from two control maps
+  - input: image [B,C,H,W], optional dx [B,2,H,W] override
+  - output pixel equals centered line average from p-dx(p)/2 to p+dx(p)/2 via K-point differentiable sampling
+  - defaults: num_steps=16, batchify_steps=true, dmax=None, dlambda=0.0
+  - dmax semantics:
+    - dmax is None: no clipping
+    - dmax >= 0: clip with this absolute pixel value
+    - dmax < 0: effective_dmax = (-dmax) * diagonal_length
+  - regularization:
+    - map regularization from both control maps
+    - dx magnitude regularization weighted by dlambda
+  - projection:
+    - project_trainable_parameters_() projects gaussian offsets and clamps low-res dx when dmax is set
 
 ### promptir_attack
 module_name: promptir_attack
 location: /home/huhao/adv_ir/source/promptir_attack.py
 kind: module
-summary: optimize haze controller against frozen PromptIR for adversarial inner-loop search.
+summary: haze-only adversarial inner-loop search against frozen PromptIR (removed rain/noise legacy args).
 run: imported by promptir_adv_training
 outputs: adversarial degraded/restored tensors and logs
 
@@ -71,15 +87,15 @@ outputs: adversarial degraded/restored tensors and logs
 module_name: promptir_adv_training
 location: /home/huhao/adv_ir/source/promptir_adv_training.py
 kind: module
-summary: online adversarial pair generation/cache during PromptIR training.
+summary: haze-only online adversarial pair generation/cache during PromptIR training; cache root is scoped under ckpt_dir/adv_data and old resample epochs are cleaned after each new resample.
 run: imported by /home/huhao/adv_ir/PromptIR/adv_train.py
-outputs: /home/huhao/adv_ir/PromptIR/data/Train/adv_pairs/shared/resample_epoch_xxxx
+outputs: <ckpt_dir>/adv_data/shared/resample_epoch_xxxx
 
 ### promptir_static_adv_training
 module_name: promptir_static_adv_training
 location: /home/huhao/adv_ir/source/promptir_static_adv_training.py
 kind: module
-summary: PromptIR training on fixed input/target adversarial dataset with configurable mix ratio.
+summary: PromptIR/NAFNet static adversarial training with replacement-mode mix (adv replaces part of base samples, epoch length stays unchanged).
 run: conda run -n promptir --no-capture-output python /home/huhao/adv_ir/source/promptir_static_adv_training.py --de_type dehaze --adv_ratio 0.5 --adv_cache_root /home/huhao/adv_ir/dataset_ours/random_adv_haze --degradation_size 16384 --num_gpus 3
 outputs: checkpoints (--ckpt_dir), training logs
 
@@ -87,8 +103,8 @@ outputs: checkpoints (--ckpt_dir), training logs
 module_name: haze_dataset_builder
 location: /home/huhao/adv_ir/source/haze_dataset_builder.py
 kind: script + module
-summary: generate paired haze dataset via density(Igt)->rho and deg(Igt)->Ideg.
-run: conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/haze_dataset_builder.py --n 100 --output_root /home/huhao/adv_ir/tmp_demo/haze_dataset_builder --max_border_crop 16
+summary: generate paired haze dataset via density(Igt)->rho and deg(Igt)->Ideg, with selectable compute device (cpu/cuda/cuda:N/auto).
+run: conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/haze_dataset_builder.py --n 100 --output_root /home/huhao/adv_ir/tmp_demo/haze_dataset_builder --max_border_crop 16 --device cuda
 outputs:
 - /home/huhao/adv_ir/tmp_demo/haze_dataset_builder/input/*.png
 - /home/huhao/adv_ir/tmp_demo/haze_dataset_builder/target/*.png
@@ -96,6 +112,9 @@ outputs:
 - /home/huhao/adv_ir/tmp_demo/haze_dataset_builder/manifest.json
 - /home/huhao/adv_ir/tmp_demo/haze_dataset_builder/summary.json
 notes:
+- runtime device selection:
+  - cli arg: --device (cpu/cuda/cuda:N/auto)
+  - summary.json / manifest.json include requested_device and resolved_device.
 - saved density images include inline value labels: min/max/mean.
 - density profile is adaptive and monotonic outer->inner.
 - random per-call ranges:
@@ -118,9 +137,22 @@ notes:
 module_name: haze_dataset_builder_launcher
 location: /home/huhao/adv_ir/haze_dataset_builder.sh
 kind: shell script
-summary: one-command wrapper for haze_dataset_builder.py with stable defaults and passthrough args.
-run: bash /home/huhao/adv_ir/haze_dataset_builder.sh
+summary: one-command wrapper for haze_dataset_builder.py with stable defaults, --device forwarding, and passthrough args.
+run: bash /home/huhao/adv_ir/haze_dataset_builder.sh --device auto
 outputs: same as selected --output_root of haze_dataset_builder.py
+
+### motion_blur_dataset_builder
+module_name: motion_blur_dataset_builder
+location: /home/huhao/adv_ir/source/motion_blur_dataset_builder.py
+kind: script
+summary: generate split-wise paired motion-blur datasets from promptir clear manifests; per-image dx magnitude/direction is sampled randomly (floating-point) and supports multi-GPU execution by per-process device binding.
+run:
+- conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/motion_blur_dataset_builder.py --split train --count 16384 --splits_json /home/huhao/adv_ir/dataset_path/promptir_clear_depth_sets_only.json --output_root /home/huhao/adv_ir/dataset/motion_sim --seed 123 --dmax_min -0.02 --dmax_max -0.0 --num_steps 16 --batchify_steps --device cuda:0
+outputs:
+- /home/huhao/adv_ir/dataset/motion_sim/<split>/input/*.png
+- /home/huhao/adv_ir/dataset/motion_sim/<split>/target/*.png
+- /home/huhao/adv_ir/dataset/motion_sim/<split>/manifest.json
+- /home/huhao/adv_ir/dataset/motion_sim/<split>/summary.json
 
 ### promptir_reside_ots_test
 module_name: promptir_reside_ots_test
@@ -212,6 +244,7 @@ outputs: /home/huhao/adv_ir/PromptIR/train_ckpt_nafnet_adv_haze50
 notes:
 - checkpoint filename format: epoch={epoch+1}-step={step+1}
 - checkpoint save frequency: every_n_epochs=8
+- adversarial cache root is forced to: <ckpt_dir>/adv_data
 
 ### run_train_nafnet_adv_haze50
 module_name: run_train_nafnet_adv_haze50
@@ -268,8 +301,69 @@ outputs: delegated to run_train_nafnet_reside_ots output_dir
 
 ### run_train_promptir_random_adv50
 module_name: run_train_promptir_random_adv50
-location: /home/huhao/adv_ir/PromptIR/run_train_promptir_random_adv50.sh
+location: /home/huhao/adv_ir/exe/run_train_promptir_random_adv50.sh
 kind: shell script
 summary: PromptIR static adversarial training launcher at 50% mix ratio.
-run: bash /home/huhao/adv_ir/PromptIR/run_train_promptir_random_adv50.sh
-outputs: /home/huhao/adv_ir/PromptIR/train_ckpt_random1024_adv_haze
+run: bash /home/huhao/adv_ir/exe/run_train_promptir_random_adv50.sh
+outputs: /home/huhao/adv_ir/exp/train_ckpt_random1024_adv_haze
+
+### run_train_nafnet_fix4096_adv50
+module_name: run_train_nafnet_fix4096_adv50
+location: /home/huhao/adv_ir/exe/run_train_nafnet_fix4096_adv50.sh
+kind: shell script
+summary: NAFNet static adversarial dehaze training launcher at 50% mix with env-overridable dataset/checkpoint roots.
+run:
+- bash /home/huhao/adv_ir/exe/run_train_nafnet_fix4096_adv50.sh
+- ADV_CACHE_ROOT=/home/huhao/adv_ir/dataset_ours/adv_haze_256_nafnet_adv_haze50_gaussian_k2_densitybar_gpu CKPT_DIR=/home/huhao/adv_ir/exp/haze/train_ckpt_nafnet_fix4096_adv bash /home/huhao/adv_ir/exe/run_train_nafnet_fix4096_adv50.sh
+outputs: /home/huhao/adv_ir/exp/haze/train_ckpt_nafnet_fix4096_adv
+
+### run_train_nafnet_motion_blur
+module_name: run_train_nafnet_motion_blur
+location: /home/huhao/adv_ir/exe/motion_blur/run_train_nafnet.sh
+kind: shell script
+summary: one-command launcher for PromptIR NAFNet training on motion-blur paired dataset.
+run: bash /home/huhao/adv_ir/exe/motion_blur/run_train_nafnet.sh
+outputs: /home/huhao/adv_ir/exp/motion_blur/train_ckpt_nafnet
+notes:
+- uses `--de_type motion_blur`.
+- dataset root is pinned by `--motion_blur_dir /home/huhao/adv_ir/dataset/motion_sim`.
+- wandb run name is pinned by script argument: `--wandb_run_name motion_blur_nafnet`.
+
+### promptir_train_dataset_loader
+module_name: promptir_train_dataset_loader
+location: /home/huhao/adv_ir/PromptIR/utils/dataset_utils.py
+kind: module
+summary: PromptIR training dataset loader now supports motion-blur paired data (`motion_blur` / `de_motion_blur`) in addition to dehaze/derain/denoise.
+run: imported by /home/huhao/adv_ir/PromptIR/train.py and /home/huhao/adv_ir/PromptIR/adv_train.py
+outputs: runtime train/val sample tensors and id metadata
+notes:
+- motion blur loader expects `<motion_blur_dir>/<split>/input` and `<motion_blur_dir>/<split>/target` with same filenames.
+- supports fallback direct layout `<motion_blur_dir>/input` + `<motion_blur_dir>/target`.
+
+### promptir_wandb_run_name
+module_name: promptir_wandb_run_name
+location: /home/huhao/adv_ir/PromptIR/options.py
+kind: option + logging behavior
+summary: PromptIR train entrypoints accept `--wandb_run_name`; when provided, it overrides the default hard-coded WandbLogger run title.
+run:
+- train.py / adv_train.py / train_expairs.py: `WandbLogger(project=opt.wblogger, name=opt.wandb_run_name or <default>)`
+- /home/huhao/adv_ir/source/promptir_static_adv_training.py: same override behavior for static adversarial training.
+outputs: wandb run display name in dashboard
+
+### promptir_clear_depth_manifests
+module_name: promptir_clear_depth_manifests
+location: /home/huhao/adv_ir/dataset_path/promptir_clear_depth_sets_only.json
+kind: data artifact + documentation
+summary: root-level PromptIR split manifests for clear/depth paths derived from data_dir manifests with existence checks.
+run: read JSON directly, or inspect compact stats via /home/huhao/adv_ir/dataset_path/promptir_clear_depth_splits_stats.json
+outputs:
+- /home/huhao/adv_ir/dataset_path/promptir_clear_depth_splits.json
+- /home/huhao/adv_ir/dataset_path/promptir_clear_depth_sets_only.json
+- /home/huhao/adv_ir/dataset_path/promptir_clear_depth_splits_stats.json
+- /home/huhao/adv_ir/source/doc/dataset_path.txt
+notes:
+- split source manifests:
+  - /home/huhao/adv_ir/PromptIR/data_dir/noisy/denoise_airnet_{train,val,test}.txt
+  - /home/huhao/adv_ir/PromptIR/data_dir/rainy/rainTrain_{train,val,test}.txt
+  - /home/huhao/adv_ir/PromptIR/data_dir/hazy/hazy_outside_{train,val,test}.txt
+- depth paths are available for haze-derived clear images only.

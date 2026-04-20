@@ -1,0 +1,48 @@
+dataset_path
+
+last_update: 2026-04-19
+workspace_root: /home/huhao/adv_ir
+
+purpose:
+- provide reusable split-level path manifests for PromptIR paired/mixed training data.
+- centralize `clear` image sets for train/val/test and include `depth` sets when available.
+
+source_manifests:
+- /home/huhao/adv_ir/PromptIR/data_dir/noisy/denoise_airnet_{train,val,test}.txt
+- /home/huhao/adv_ir/PromptIR/data_dir/rainy/rainTrain_{train,val,test}.txt
+- /home/huhao/adv_ir/PromptIR/data_dir/hazy/hazy_outside_{train,val,test}.txt
+
+generated_manifest_files:
+- /home/huhao/adv_ir/dataset_path/promptir_clear_depth_splits.json
+- /home/huhao/adv_ir/dataset_path/promptir_clear_depth_sets_only.json
+- /home/huhao/adv_ir/dataset_path/promptir_clear_depth_splits_stats.json
+
+path_mapping_rules:
+- noisy:
+  - each manifest item is already a clean image relative path (e.g., noise/mix/00001.bmp).
+- rainy:
+  - input path under `.../input/...` maps to clear path by replacing `/input/` with `/target/`.
+- hazy:
+  - hazy path under `.../haze/reside_ots/haze/xxxx_a_b.jpg` maps to clear path `.../clear/xxxx.jpg`.
+  - depth path maps from clear path by `.../clear/xxxx.jpg -> .../depth/xxxx.mat`.
+
+meaning_for_training:
+- `promptir_clear_depth_sets_only.json` is the minimal loader-friendly file:
+  - `splits.train.clear_paths`, `splits.val.clear_paths`, `splits.test.clear_paths`
+  - `splits.*.depth_paths` (non-empty only for haze-related clear images)
+- `promptir_clear_depth_splits.json` is the full diagnostic file:
+  - includes per-task subgroups (`noisy`, `rainy`, `hazy`)
+  - includes missing-path lists and detailed counts
+- `promptir_clear_depth_splits_stats.json` is a compact summary:
+  - counts and first-5 examples for quick sanity checks
+
+validation_snapshot:
+- train: clear=17529, depth=468
+- val: clear=973, depth=26
+- test: clear=973, depth=26
+- missing paths: all zero in current filesystem snapshot
+
+notes:
+- paths are absolute and point to the resolved dataset root:
+  /home/bbnclxy/ext8t-2/huhao/adv_ir/dataset
+- depth is only available for haze-derived clear images in this dataset layout.

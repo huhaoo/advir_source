@@ -14,7 +14,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
-from degradation import haze_degradation, random_degradation_configs_from_image
+from degradation import haze_degradation, random_haze_degradation_config_from_image
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -181,7 +181,7 @@ def build_haze_controller_from_image(
     gaussian_offset_lambda_first_order: float = 5e-2,
     gaussian_offset_lambda_second_order: float = 2e-1,
 ) -> haze_degradation:
-    _, _, haze_cfg = random_degradation_configs_from_image(
+    haze_cfg = random_haze_degradation_config_from_image(
         image,
         interp_mode=interp_mode,
         gaussian_radius=gaussian_radius,
@@ -219,17 +219,12 @@ def run_single_image_adversarial_degradation_search(
     steps2: int = 2,
     step_size: float = 3e-2,
     lambda_reg: float = 0.05,
-    rain_topk: int = 1,
     save_dir: Path | None = None,
     record_history: bool = True,
-    save_visual_maps: bool = False,
     allow_promptir_trainable_params: bool = False,
     promptir_patch_size: int | None = None,
     promptir_patch_overlap: int = 0,
 ) -> dict[str, Any]:
-    del rain_topk
-    del save_visual_maps
-
     if image.ndim != 4 or image.shape[0] != 1:
         raise ValueError(f"image must be shape (1, C, H, W), got {tuple(image.shape)}")
     if target.shape != image.shape:
@@ -402,7 +397,6 @@ def run_single_image_adversarial_degradation_search(
         "output_shape": tuple(worst_restored.shape),
         "history": history,
         "save_info": save_info,
-        "rain_auto_params": [],
         "last_grad_norms": {"haze_low_res_param_grad_norm": None},
         "worst_degraded": worst_degraded.detach().cpu(),
         "worst_restored": worst_restored.detach().cpu(),

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CKPT_DIR="${1:-/home/huhao/adv_ir/exp/train_ckpt_nafnet_adv_haze50_gaussian}"
+CKPT_DIR="${1:-/home/huhao/adv_ir/exp/haze/train_ckpt_nafnet_adv50_gaussian}"
 DATASET_ROOT="${2:-/home/huhao/adv_ir/dataset_ours/haze_dataset_builder}"
 DEVICE="${3:-cuda}"
 OUTPUT_DIR="${4:-/home/huhao/adv_ir/tmp_demo/promptir_paired_dataset_test_latest_nafnet_adv_haze50_gaussian_haze_dataset_builder}"

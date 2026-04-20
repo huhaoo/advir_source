@@ -96,9 +96,12 @@ class promptir_static_adv_mix_dataset(Dataset):
     def _compute_adv_len(self) -> int:
         if self.base_len <= 0:
             return 0
+        requested = 0
         if self.adv_samples_per_resample > 0:
-            return self.adv_samples_per_resample
-        return max(1, int(round(self.base_len * self.adv_ratio)))
+            requested = self.adv_samples_per_resample
+        else:
+            requested = max(1, int(round(self.base_len * self.adv_ratio)))
+        return max(0, min(self.base_len, requested))
 
     def _resolve_target_path(self, rel_path: Path) -> Path | None:
         exact = self.target_dir / rel_path
@@ -165,27 +168,24 @@ class promptir_static_adv_mix_dataset(Dataset):
         return degrad_img, clean_img, record
 
     def __len__(self) -> int:
-        return self.base_len + self.adv_len
+        # replacement mode: keep epoch length equal to base dataset size
+        return self.base_len
 
     def __getitem__(self, idx: int):
-        if idx < self.base_len:
-            return self.base_dataset[idx]
+        if len(self.adv_records) > 0 and idx < self.adv_len:
+            adv_idx = idx % len(self.adv_records)
+            degrad_img, clean_img, record = self._load_adv_pair(adv_idx)
 
-        if len(self.adv_records) == 0:
-            mapped_idx = idx % max(1, self.base_len)
-            return self.base_dataset[mapped_idx]
+            if self.base_dataset.data_split == "train":
+                degrad_patch, clean_patch = random_augmentation(*self.base_dataset._crop_patch(degrad_img, clean_img))
+            else:
+                degrad_patch, clean_patch = self.base_dataset._center_crop_patch(degrad_img, clean_img)
 
-        adv_idx = (idx - self.base_len) % len(self.adv_records)
-        degrad_img, clean_img, record = self._load_adv_pair(adv_idx)
+            clean_patch = self.base_dataset.toTensor(clean_patch)
+            degrad_patch = self.base_dataset.toTensor(degrad_patch)
+            return [str(record["clean_name"]), int(record["de_id"])], degrad_patch, clean_patch
 
-        if self.base_dataset.data_split == "train":
-            degrad_patch, clean_patch = random_augmentation(*self.base_dataset._crop_patch(degrad_img, clean_img))
-        else:
-            degrad_patch, clean_patch = self.base_dataset._center_crop_patch(degrad_img, clean_img)
-
-        clean_patch = self.base_dataset.toTensor(clean_patch)
-        degrad_patch = self.base_dataset.toTensor(degrad_patch)
-        return [str(record["clean_name"]), int(record["de_id"])], degrad_patch, clean_patch
+        return self.base_dataset[idx]
 
 
 class promptir_static_adv_model(pl.LightningModule):
@@ -246,7 +246,8 @@ def main() -> None:
     print(opt)
 
     if should_use_wandb(opt.wblogger):
-        logger = WandbLogger(project=opt.wblogger, name="PromptIR-StaticAdvTrain")
+        run_name = str(getattr(opt, "wandb_run_name", "")).strip() or "PromptIR-StaticAdvTrain"
+        logger = WandbLogger(project=opt.wblogger, name=run_name)
     else:
         logger = TensorBoardLogger(save_dir="logs/")
 
@@ -254,6 +255,7 @@ def main() -> None:
     trainset = promptir_static_adv_mix_dataset(trainset_base, opt)
     print(
         f"[StaticAdvMix] base_len={trainset.base_len} adv_len={trainset.adv_len} "
+        f"total_len={len(trainset)} replace_mode=true "
         f"adv_available={len(trainset.adv_records)} adv_root={trainset.static_adv_root}"
     )
 
