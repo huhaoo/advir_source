@@ -14,7 +14,12 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
-from degradation import haze_degradation, random_haze_degradation_config_from_image
+from degradation import (
+    haze_degradation,
+    motion_blur_degradation,
+    random_haze_degradation_config_from_image,
+    random_motion_blur_degradation_config_from_image,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -197,6 +202,41 @@ def build_haze_controller_from_image(
     return haze_degradation(haze_cfg)
 
 
+def build_motion_blur_controller_from_image(
+    image: Tensor,
+    num_steps: int = 16,
+    dmax: float | None = -0.02,
+    dlambda: float = 0.0,
+    interp_mode: str = "bicubic",
+    gaussian_radius: int = 4,
+    gaussian_sigma: float = 1.25,
+    gaussian_extra_cells: int = 2,
+    gaussian_enable_offset: bool = False,
+    gaussian_offset_max: float = 0.5,
+    gaussian_offset_lambda_first_order: float = 5e-2,
+    gaussian_offset_lambda_second_order: float = 2e-1,
+) -> motion_blur_degradation:
+    motion_cfg = random_motion_blur_degradation_config_from_image(
+        image=image,
+        num_steps=int(num_steps),
+        mode="bilinear",
+        padding_mode="border",
+        align_corners=True,
+        batchify_steps=True,
+        dmax=dmax,
+        dlambda=float(dlambda),
+        interp_mode=interp_mode,
+        gaussian_radius=int(gaussian_radius),
+        gaussian_sigma=float(gaussian_sigma),
+        gaussian_extra_cells=int(gaussian_extra_cells),
+        gaussian_enable_offset=bool(gaussian_enable_offset),
+        gaussian_offset_max=float(gaussian_offset_max),
+        gaussian_offset_lambda_first_order=float(gaussian_offset_lambda_first_order),
+        gaussian_offset_lambda_second_order=float(gaussian_offset_lambda_second_order),
+    )
+    return motion_blur_degradation(motion_cfg)
+
+
 def _tensor_to_uint8_hwc(image: Tensor) -> np.ndarray:
     if image.ndim == 4:
         image = image[0]
@@ -213,7 +253,7 @@ def run_single_image_adversarial_degradation_search(
     image: Tensor,
     target: Tensor,
     promptir_model: nn.Module,
-    degradation_controller: haze_degradation,
+    degradation_controller: haze_degradation | motion_blur_degradation,
     distance_map: Tensor | None = None,
     steps1: int = 2,
     steps2: int = 2,
@@ -229,11 +269,19 @@ def run_single_image_adversarial_degradation_search(
         raise ValueError(f"image must be shape (1, C, H, W), got {tuple(image.shape)}")
     if target.shape != image.shape:
         raise ValueError(f"target shape must equal image shape, got image={tuple(image.shape)}, target={tuple(target.shape)}")
-    if not isinstance(degradation_controller, haze_degradation):
-        raise ValueError(f"degradation_controller must be haze_degradation, got {type(degradation_controller)!r}")
+    is_haze = isinstance(degradation_controller, haze_degradation)
+    is_motion_blur = isinstance(degradation_controller, motion_blur_degradation)
+    if not (is_haze or is_motion_blur):
+        raise ValueError(
+            "degradation_controller must be haze_degradation or motion_blur_degradation, "
+            f"got {type(degradation_controller)!r}"
+        )
 
-    if distance_map is None:
-        distance_map = torch.ones((1, 1, image.shape[-2], image.shape[-1]), dtype=image.dtype, device=image.device)
+    if is_haze:
+        if distance_map is None:
+            distance_map = torch.ones((1, 1, image.shape[-2], image.shape[-1]), dtype=image.dtype, device=image.device)
+    else:
+        distance_map = None
 
     if steps1 <= 0 or steps2 <= 0:
         raise ValueError(f"steps1 and steps2 must be > 0, got steps1={steps1}, steps2={steps2}")
@@ -257,11 +305,12 @@ def run_single_image_adversarial_degradation_search(
 
     attack_params = [parameter for parameter in degradation_controller.parameters() if parameter.requires_grad]
     if len(attack_params) == 0:
-        raise RuntimeError("haze controller has no trainable parameters")
+        raise RuntimeError("degradation controller has no trainable parameters")
 
     optimizer = torch.optim.Adam(attack_params, lr=step_size)
 
-    state = {"current_enabled": ["haze"], "current_order": ["haze"]}
+    attack_subset = "haze" if is_haze else "motion_blur"
+    state = {"current_enabled": [attack_subset], "current_order": [attack_subset]}
     history: list[dict[str, Any]] = []
 
     best_attack_obj = float("-inf")
@@ -277,7 +326,10 @@ def run_single_image_adversarial_degradation_search(
     worst_restored: Tensor | None = None
 
     for outer_idx in range(steps1):
-        x_deg_outer = degradation_controller(image, distance_map=distance_map).requires_grad_(True)
+        if is_haze:
+            x_deg_outer = degradation_controller(image, distance_map=distance_map).requires_grad_(True)
+        else:
+            x_deg_outer = degradation_controller(image).requires_grad_(True)
         if promptir_patch_size is None:
             task_loss_outer, fixed_grad, x_hat_outer = _promptir_task_and_grad(promptir_model, x_deg_outer, target)
         else:
@@ -317,7 +369,10 @@ def run_single_image_adversarial_degradation_search(
 
         for inner_idx in range(steps2):
             optimizer.zero_grad(set_to_none=True)
-            x_deg_inner = degradation_controller(image, distance_map=distance_map)
+            if is_haze:
+                x_deg_inner = degradation_controller(image, distance_map=distance_map)
+            else:
+                x_deg_inner = degradation_controller(image)
             reg_loss_inner = degradation_controller.get_regularization_loss()
 
             # Use first-order surrogate with fixed PromptIR gradient from outer step.
@@ -341,7 +396,7 @@ def run_single_image_adversarial_degradation_search(
     if initial_task_loss is None or initial_reg_loss is None or initial_attack_obj is None:
         raise RuntimeError("failed to initialize attack states")
     if worst_degraded is None or worst_restored is None:
-        raise RuntimeError("failed to produce adversarial haze sample")
+        raise RuntimeError("failed to produce adversarial degraded sample")
 
     final_reg_loss = float(degradation_controller.get_regularization_loss().detach().item())
 
@@ -382,6 +437,12 @@ def run_single_image_adversarial_degradation_search(
             "attack_log": str(log_path),
         }
 
+    last_grad_norms: dict[str, float | None] = {"degradation_low_res_param_grad_norm": None}
+    if attack_subset == "haze":
+        last_grad_norms["haze_low_res_param_grad_norm"] = None
+    else:
+        last_grad_norms["motion_blur_low_res_param_grad_norm"] = None
+
     return {
         "state": state,
         "initial_task_loss": float(initial_task_loss.item()),
@@ -397,7 +458,7 @@ def run_single_image_adversarial_degradation_search(
         "output_shape": tuple(worst_restored.shape),
         "history": history,
         "save_info": save_info,
-        "last_grad_norms": {"haze_low_res_param_grad_norm": None},
+        "last_grad_norms": last_grad_norms,
         "worst_degraded": worst_degraded.detach().cpu(),
         "worst_restored": worst_restored.detach().cpu(),
     }

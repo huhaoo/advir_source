@@ -257,18 +257,7 @@ class motion_blur_degradation(nn.Module):
         }
 
 
-def random_haze_degradation_config_from_image(
-    image: Tensor,
-    interp_mode: str = "bicubic",
-    gaussian_radius: int = 4,
-    gaussian_sigma: float = 1.25,
-    gaussian_extra_cells: int = 2,
-    gaussian_enable_offset: bool = False,
-    gaussian_offset_max: float = 0.5,
-    gaussian_offset_lambda_first_order: float = 5e-2,
-    gaussian_offset_lambda_second_order: float = 2e-1,
-) -> HazeDegradationConfig:
-    """Sample one random haze degradation config from an input image."""
+def _extract_chw_from_image(image: Tensor) -> tuple[int, int, int]:
     if not isinstance(image, torch.Tensor):
         raise ValueError(f"image must be torch.Tensor, got {type(image)!r}")
     if image.ndim == 4:
@@ -281,6 +270,22 @@ def random_haze_degradation_config_from_image(
         raise ValueError(f"image must have shape (B, C, H, W) or (C, H, W), got {tuple(image.shape)}")
     if c <= 0 or h <= 0 or w <= 0:
         raise ValueError(f"invalid image shape: (C, H, W)=({c}, {h}, {w})")
+    return int(c), int(h), int(w)
+
+
+def random_haze_degradation_config_from_image(
+    image: Tensor,
+    interp_mode: str = "bicubic",
+    gaussian_radius: int = 4,
+    gaussian_sigma: float = 1.25,
+    gaussian_extra_cells: int = 2,
+    gaussian_enable_offset: bool = False,
+    gaussian_offset_max: float = 0.5,
+    gaussian_offset_lambda_first_order: float = 5e-2,
+    gaussian_offset_lambda_second_order: float = 2e-1,
+) -> HazeDegradationConfig:
+    """Sample one random haze degradation config from an input image."""
+    _, h, w = _extract_chw_from_image(image)
 
     interp_mode = str(interp_mode).strip().lower()
     if interp_mode not in {"nearest", "bilinear", "bicubic", "area", "gaussian"}:
@@ -346,6 +351,102 @@ def random_haze_degradation_config_from_image(
         beta_mean=float(beta_mean),
         beta_std=float(beta_std),
         min_beta=1e-3,
+    )
+
+
+def random_motion_blur_degradation_config_from_image(
+    image: Tensor,
+    num_steps: int = 16,
+    mode: str = "bilinear",
+    padding_mode: str = "border",
+    align_corners: bool = True,
+    batchify_steps: bool = True,
+    dmax: float | None = -0.02,
+    dlambda: float = 0.0,
+    interp_mode: str = "bicubic",
+    gaussian_radius: int = 4,
+    gaussian_sigma: float = 1.25,
+    gaussian_extra_cells: int = 2,
+    gaussian_enable_offset: bool = False,
+    gaussian_offset_max: float = 0.5,
+    gaussian_offset_lambda_first_order: float = 5e-2,
+    gaussian_offset_lambda_second_order: float = 2e-1,
+) -> MotionBlurDegradationConfig:
+    """Sample one motion blur degradation config from an input image.
+
+    When `dmax` is not None, this sampler draws the actual `cfg.dmax`
+    uniformly from `[dmax/2, dmax]` (order-insensitive for negative values).
+    """
+    _, h, w = _extract_chw_from_image(image)
+
+    interp_mode = str(interp_mode).strip().lower()
+    if interp_mode not in {"nearest", "bilinear", "bicubic", "area", "gaussian"}:
+        raise ValueError(
+            "interp_mode must be one of "
+            "{nearest, bilinear, bicubic, area, gaussian}, "
+            f"got {interp_mode!r}"
+        )
+    if not isinstance(gaussian_radius, int) or gaussian_radius <= 0:
+        raise ValueError(f"gaussian_radius must be positive int, got {gaussian_radius}")
+    if not isinstance(gaussian_sigma, (int, float)) or float(gaussian_sigma) <= 0:
+        raise ValueError(f"gaussian_sigma must be positive numeric, got {gaussian_sigma}")
+    if not isinstance(gaussian_extra_cells, int) or gaussian_extra_cells < 0:
+        raise ValueError(f"gaussian_extra_cells must be non-negative int, got {gaussian_extra_cells}")
+    if not isinstance(gaussian_enable_offset, bool):
+        raise ValueError(f"gaussian_enable_offset must be bool, got {type(gaussian_enable_offset)!r}")
+    if not isinstance(gaussian_offset_max, (int, float)) or float(gaussian_offset_max) < 0:
+        raise ValueError(f"gaussian_offset_max must be numeric and >= 0, got {gaussian_offset_max}")
+    if not isinstance(gaussian_offset_lambda_first_order, (int, float)):
+        raise ValueError(
+            "gaussian_offset_lambda_first_order must be numeric, "
+            f"got {type(gaussian_offset_lambda_first_order)!r}"
+        )
+    if not isinstance(gaussian_offset_lambda_second_order, (int, float)):
+        raise ValueError(
+            "gaussian_offset_lambda_second_order must be numeric, "
+            f"got {type(gaussian_offset_lambda_second_order)!r}"
+        )
+
+    sampled_dmax: float | None
+    if dmax is None:
+        sampled_dmax = None
+    else:
+        dmax_val = float(dmax)
+        dmax_half = 0.5 * dmax_val
+        dmax_lo = min(dmax_half, dmax_val)
+        dmax_hi = max(dmax_half, dmax_val)
+        if dmax_hi == dmax_lo:
+            sampled_dmax = dmax_val
+        else:
+            sampled_dmax = float(dmax_lo + (dmax_hi - dmax_lo) * float(torch.rand(1).item()))
+
+    motion_lh, motion_lw = max(4, min(16, h)), max(4, min(16, w))
+    return MotionBlurDegradationConfig(
+        map_config=ControlMapConfig(
+            low_res_height=motion_lh,
+            low_res_width=motion_lw,
+            high_res_height=int(h),
+            high_res_width=int(w),
+            interp_mode=interp_mode,
+            align_corners=False,
+            gaussian_radius=gaussian_radius,
+            gaussian_sigma=gaussian_sigma,
+            gaussian_extra_cells=gaussian_extra_cells,
+            gaussian_enable_offset=gaussian_enable_offset,
+            gaussian_offset_max=gaussian_offset_max,
+            lambda_offset_first_order=float(gaussian_offset_lambda_first_order),
+            lambda_offset_second_order=float(gaussian_offset_lambda_second_order),
+            init_mode="normal",
+            init_value=0.0,
+            init_scale=0.1,
+        ),
+        num_steps=int(num_steps),
+        mode=str(mode),
+        padding_mode=str(padding_mode),
+        align_corners=bool(align_corners),
+        batchify_steps=bool(batchify_steps),
+        dmax=sampled_dmax,
+        dlambda=float(dlambda),
     )
 
 

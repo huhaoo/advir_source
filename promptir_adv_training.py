@@ -28,8 +28,12 @@ from promptir_attack import (  # noqa: E402
     _load_distance_from_mat,
     _load_image_rgb,
     build_haze_controller_from_image,
+    build_motion_blur_controller_from_image,
     run_single_image_adversarial_degradation_search,
 )
+
+DEHAZE_DE_ID = 4
+MOTION_BLUR_DE_ID = 5
 
 
 class promptir_adv_mix_dataset(Dataset):
@@ -80,6 +84,14 @@ class promptir_adv_mix_dataset(Dataset):
         self.adv_gaussian_offset_max = float(getattr(args, "adv_gaussian_offset_max", 0.5))
         self.adv_gaussian_offset_lambda_first_order = float(getattr(args, "adv_gaussian_offset_lambda_first_order", 0.05))
         self.adv_gaussian_offset_lambda_second_order = float(getattr(args, "adv_gaussian_offset_lambda_second_order", 0.2))
+        self.adv_motion_num_steps = int(getattr(args, "adv_motion_num_steps", 16))
+        self.adv_motion_dmax: float | None
+        adv_motion_dmax_raw = getattr(args, "adv_motion_dmax", -0.02)
+        if adv_motion_dmax_raw is None:
+            self.adv_motion_dmax = None
+        else:
+            self.adv_motion_dmax = float(adv_motion_dmax_raw)
+        self.adv_motion_dlambda = float(getattr(args, "adv_motion_dlambda", 0.0))
         if self.adv_gaussian_radius <= 0:
             raise ValueError(f"adv_gaussian_radius must be > 0, got {self.adv_gaussian_radius}")
         if self.adv_gaussian_sigma <= 0:
@@ -98,6 +110,10 @@ class promptir_adv_mix_dataset(Dataset):
                 "adv_gaussian_offset_lambda_second_order must be >= 0, "
                 f"got {self.adv_gaussian_offset_lambda_second_order}"
             )
+        if self.adv_motion_num_steps <= 0:
+            raise ValueError(f"adv_motion_num_steps must be > 0, got {self.adv_motion_num_steps}")
+        if self.adv_motion_dlambda < 0:
+            raise ValueError(f"adv_motion_dlambda must be >= 0, got {self.adv_motion_dlambda}")
 
         self.base_len = len(self.base_dataset)
         self.adv_len = self._compute_adv_len()
@@ -109,6 +125,16 @@ class promptir_adv_mix_dataset(Dataset):
 
         self.depth_dir = PROJECT_ROOT / "dataset" / "haze" / "reside_ots" / "depth"
         self.haze_source_indices = self._build_haze_source_indices()
+        self.motion_blur_source_indices = self._build_motion_blur_source_indices()
+        self.attack_subsets = self._build_attack_subsets()
+
+    def _build_attack_subsets(self) -> list[str]:
+        subsets: list[str] = []
+        if len(self.haze_source_indices) > 0:
+            subsets.append("haze")
+        if len(self.motion_blur_source_indices) > 0:
+            subsets.append("motion_blur")
+        return subsets
 
     def _should_resample_epoch(self, epoch: int, force: bool) -> bool:
         if force:
@@ -122,13 +148,28 @@ class promptir_adv_mix_dataset(Dataset):
                 de_id = int(sample.get("de_type", -1))
             except Exception:
                 continue
-            if de_id != 4:
+            if de_id != DEHAZE_DE_ID:
                 continue
             clean_path = self._resolve_dehaze_clean_path(str(sample.get("clean_id", "")))
             if clean_path is None:
                 continue
             depth_path = self._resolve_depth_mat(clean_path)
             if depth_path is None:
+                continue
+            indices.append(i)
+        return indices
+
+    def _build_motion_blur_source_indices(self) -> list[int]:
+        indices: list[int] = []
+        for i, sample in enumerate(self.base_dataset.sample_ids):
+            try:
+                de_id = int(sample.get("de_type", -1))
+            except Exception:
+                continue
+            if de_id != MOTION_BLUR_DE_ID:
+                continue
+            clean_target_path = str(sample.get("target_id", ""))
+            if clean_target_path == "" or (not os.path.exists(clean_target_path)):
                 continue
             indices.append(i)
         return indices
@@ -253,13 +294,23 @@ class promptir_adv_mix_dataset(Dataset):
                 continue
             if not os.path.exists(degrad_path) or not os.path.exists(clean_path):
                 continue
+            de_id = int(item.get("de_id", DEHAZE_DE_ID))
+            raw_subset = item.get("attack_subset", None)
+            if isinstance(raw_subset, str):
+                attack_subset = [raw_subset]
+            elif isinstance(raw_subset, list):
+                attack_subset = [str(x) for x in raw_subset if isinstance(x, (str, int, float))]
+                if len(attack_subset) == 0:
+                    attack_subset = ["haze"] if de_id == DEHAZE_DE_ID else ["motion_blur"]
+            else:
+                attack_subset = ["haze"] if de_id == DEHAZE_DE_ID else ["motion_blur"]
             out.append(
                 {
                     "degraded_path": degrad_path,
                     "clean_path": clean_path,
-                    "de_id": int(item.get("de_id", 4)),
+                    "de_id": de_id,
                     "clean_name": str(item.get("clean_name", Path(clean_path).stem)),
-                    "attack_subset": ["haze"],
+                    "attack_subset": attack_subset,
                 }
             )
             density_path = item.get("density_path")
@@ -381,6 +432,17 @@ class promptir_adv_mix_dataset(Dataset):
         image = torch.nn.functional.interpolate(image, size=(new_h, new_w), mode="bilinear", align_corners=False)
         distance_map = torch.nn.functional.interpolate(distance_map, size=(new_h, new_w), mode="bilinear", align_corners=False)
         return image, distance_map
+
+    def _ensure_min_hw_tensor(self, image: torch.Tensor) -> torch.Tensor:
+        patch_size = int(self.base_dataset.args.patch_size)
+        _, _, h, w = image.shape
+        if h >= patch_size and w >= patch_size:
+            return image
+
+        new_h = max(h, patch_size)
+        new_w = max(w, patch_size)
+        image = torch.nn.functional.interpolate(image, size=(new_h, new_w), mode="bilinear", align_corners=False)
+        return image
 
     def _ensure_min_hw_numpy_pair(
         self,
@@ -538,7 +600,8 @@ class promptir_adv_mix_dataset(Dataset):
         self._write_manifest(epoch=epoch, records=new_records)
         self._cleanup_old_resample_dirs(keep_epoch=epoch)
         print(
-            f"[AdvMixHazeOnly] epoch={epoch} base={self.base_len} adv_target={self.adv_len} adv_ready={len(self.adv_records)} "
+            f"[AdvMixOnline] epoch={epoch} base={self.base_len} adv_target={self.adv_len} adv_ready={len(self.adv_records)} "
+            f"subsets={self.attack_subsets} "
             f"k={self.adv_aug_k} resample_every={self.adv_resample_epochs} "
             f"lambda_reg={self.adv_lambda_reg:.6g} sample_root={self._epoch_dir(epoch)}"
         )
@@ -562,8 +625,8 @@ class promptir_adv_mix_dataset(Dataset):
             return []
         if promptir_model_override is None:
             raise ValueError("promptir_model_override is required for adversarial resampling")
-        if len(self.haze_source_indices) == 0:
-            print("[AdvMixHazeOnly] no valid dehaze+depth source sample found, skip resample")
+        if len(self.attack_subsets) == 0:
+            print("[AdvMixOnline] no valid source sample found for any supported attack subset, skip resample")
             return []
 
         # Generate only ceil(local_target / k) adversarial samples, then duplicate by simple augmentation.
@@ -592,65 +655,116 @@ class promptir_adv_mix_dataset(Dataset):
             while len(local_records) < local_target and produced_base_adv < base_adv_target and attempts < max_attempts:
                 attempts += 1
 
-                src_idx = random.choice(self.haze_source_indices)
-                sample = self.base_dataset.sample_ids[src_idx]
+                attack_subset = random.choice(self.attack_subsets)
+                density_np: np.ndarray | None = None
+                de_id_value: int
 
-                clean_path = self._resolve_dehaze_clean_path(str(sample.get("clean_id", "")))
-                if clean_path is None or not os.path.exists(clean_path):
-                    continue
+                if attack_subset == "haze":
+                    src_idx = random.choice(self.haze_source_indices)
+                    sample = self.base_dataset.sample_ids[src_idx]
 
-                depth_mat = self._resolve_depth_mat(clean_path)
-                if depth_mat is None:
-                    continue
+                    clean_path = self._resolve_dehaze_clean_path(str(sample.get("clean_id", "")))
+                    if clean_path is None or not os.path.exists(clean_path):
+                        continue
 
-                image = _load_image_rgb(Path(clean_path))
-                _, _, h, w = image.shape
-                distance_map, _ = _load_distance_from_mat(depth_mat, (h, w))
+                    depth_mat = self._resolve_depth_mat(clean_path)
+                    if depth_mat is None:
+                        continue
 
-                image, distance_map = self._ensure_min_hw_tensor_pair(image, distance_map)
-                target = image.clone()
+                    image = _load_image_rgb(Path(clean_path))
+                    _, _, h, w = image.shape
+                    distance_map, _ = _load_distance_from_mat(depth_mat, (h, w))
+                    image, distance_map = self._ensure_min_hw_tensor_pair(image, distance_map)
+                    target = image.clone()
 
-                image = image.to(device)
-                target = target.to(device)
-                distance_map = distance_map.to(device)
+                    image = image.to(device)
+                    target = target.to(device)
+                    distance_map = distance_map.to(device)
 
-                controller = build_haze_controller_from_image(
-                    image,
-                    interp_mode=self.adv_map_interp_mode,
-                    gaussian_radius=self.adv_gaussian_radius,
-                    gaussian_sigma=self.adv_gaussian_sigma,
-                    gaussian_extra_cells=self.adv_gaussian_extra_cells,
-                    gaussian_enable_offset=self.adv_gaussian_enable_offset,
-                    gaussian_offset_max=self.adv_gaussian_offset_max,
-                    gaussian_offset_lambda_first_order=self.adv_gaussian_offset_lambda_first_order,
-                    gaussian_offset_lambda_second_order=self.adv_gaussian_offset_lambda_second_order,
-                )
-                result = run_single_image_adversarial_degradation_search(
-                    image=image,
-                    target=target,
-                    promptir_model=promptir_model,
-                    degradation_controller=controller,
-                    distance_map=distance_map,
-                    steps1=self.adv_steps1,
-                    steps2=self.adv_steps2,
-                    step_size=self.adv_step_size,
-                    lambda_reg=self.adv_lambda_reg,
-                    save_dir=None,
-                    record_history=False,
-                    allow_promptir_trainable_params=False,
-                    promptir_patch_size=self.adv_promptir_patch_size,
-                    promptir_patch_overlap=self.adv_promptir_patch_overlap,
-                )
+                    controller = build_haze_controller_from_image(
+                        image,
+                        interp_mode=self.adv_map_interp_mode,
+                        gaussian_radius=self.adv_gaussian_radius,
+                        gaussian_sigma=self.adv_gaussian_sigma,
+                        gaussian_extra_cells=self.adv_gaussian_extra_cells,
+                        gaussian_enable_offset=self.adv_gaussian_enable_offset,
+                        gaussian_offset_max=self.adv_gaussian_offset_max,
+                        gaussian_offset_lambda_first_order=self.adv_gaussian_offset_lambda_first_order,
+                        gaussian_offset_lambda_second_order=self.adv_gaussian_offset_lambda_second_order,
+                    )
+                    result = run_single_image_adversarial_degradation_search(
+                        image=image,
+                        target=target,
+                        promptir_model=promptir_model,
+                        degradation_controller=controller,
+                        distance_map=distance_map,
+                        steps1=self.adv_steps1,
+                        steps2=self.adv_steps2,
+                        step_size=self.adv_step_size,
+                        lambda_reg=self.adv_lambda_reg,
+                        save_dir=None,
+                        record_history=False,
+                        allow_promptir_trainable_params=False,
+                        promptir_patch_size=self.adv_promptir_patch_size,
+                        promptir_patch_overlap=self.adv_promptir_patch_overlap,
+                    )
+                    if self.adv_save_density_maps:
+                        with torch.no_grad():
+                            density_np = controller.get_beta_map()[0, 0].detach().cpu().float().numpy()
+                    de_id_value = DEHAZE_DE_ID
+                elif attack_subset == "motion_blur":
+                    src_idx = random.choice(self.motion_blur_source_indices)
+                    sample = self.base_dataset.sample_ids[src_idx]
+
+                    clean_path = str(sample.get("target_id", ""))
+                    if clean_path == "" or (not os.path.exists(clean_path)):
+                        continue
+
+                    image = _load_image_rgb(Path(clean_path))
+                    image = self._ensure_min_hw_tensor(image)
+                    target = image.clone()
+
+                    image = image.to(device)
+                    target = target.to(device)
+
+                    controller = build_motion_blur_controller_from_image(
+                        image=image,
+                        num_steps=self.adv_motion_num_steps,
+                        dmax=self.adv_motion_dmax,
+                        dlambda=self.adv_motion_dlambda,
+                        interp_mode=self.adv_map_interp_mode,
+                        gaussian_radius=self.adv_gaussian_radius,
+                        gaussian_sigma=self.adv_gaussian_sigma,
+                        gaussian_extra_cells=self.adv_gaussian_extra_cells,
+                        gaussian_enable_offset=self.adv_gaussian_enable_offset,
+                        gaussian_offset_max=self.adv_gaussian_offset_max,
+                        gaussian_offset_lambda_first_order=self.adv_gaussian_offset_lambda_first_order,
+                        gaussian_offset_lambda_second_order=self.adv_gaussian_offset_lambda_second_order,
+                    )
+                    result = run_single_image_adversarial_degradation_search(
+                        image=image,
+                        target=target,
+                        promptir_model=promptir_model,
+                        degradation_controller=controller,
+                        distance_map=None,
+                        steps1=self.adv_steps1,
+                        steps2=self.adv_steps2,
+                        step_size=self.adv_step_size,
+                        lambda_reg=self.adv_lambda_reg,
+                        save_dir=None,
+                        record_history=False,
+                        allow_promptir_trainable_params=False,
+                        promptir_patch_size=self.adv_promptir_patch_size,
+                        promptir_patch_overlap=self.adv_promptir_patch_overlap,
+                    )
+                    de_id_value = MOTION_BLUR_DE_ID
+                else:
+                    raise RuntimeError(f"unsupported attack subset: {attack_subset}")
 
                 adv_img = result["worst_degraded"]
                 clean_img = image.detach().cpu()
-
                 adv_np = self._tensor_to_uint8_hwc(adv_img)
                 clean_np = self._tensor_to_uint8_hwc(clean_img)
-                density_np: np.ndarray | None = None
-                if self.adv_save_density_maps:
-                    with torch.no_grad():
-                        density_np = controller.get_beta_map()[0, 0].detach().cpu().float().numpy()
                 expanded_pairs = self._expand_with_simple_augmentations(
                     adv_np=adv_np,
                     clean_np=clean_np,
@@ -672,9 +786,9 @@ class promptir_adv_mix_dataset(Dataset):
                         {
                             "degraded_path": str(adv_path),
                             "clean_path": str(clean_out_path),
-                            "de_id": 4,
+                            "de_id": int(de_id_value),
                             "clean_name": clean_name,
-                            "attack_subset": ["haze"],
+                            "attack_subset": [attack_subset],
                             "aug_index": int(aug_idx),
                         }
                     )
@@ -695,7 +809,7 @@ class promptir_adv_mix_dataset(Dataset):
                 promptir_model.eval()
 
         print(
-            f"[AdvMixHazeOnlyShard] epoch={epoch} rank={rank}/{world} local_target={local_target} "
+            f"[AdvMixOnlineShard] epoch={epoch} rank={rank}/{world} local_target={local_target} "
             f"base_adv_target={base_adv_target} base_adv_ready={produced_base_adv} local_ready={len(local_records)}"
         )
         return local_records

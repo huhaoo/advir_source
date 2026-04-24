@@ -1,6 +1,6 @@
 work_log_rolling
 
-last_update: 2026-04-20
+last_update: 2026-04-22
 workspace_root: /home/huhao/adv_ir
 
 purpose:
@@ -17,46 +17,210 @@ maintenance_rule:
 
 handoff_now:
 - current_focus:
-  - motion_sim dataset dmax range is upgraded to [-0.02, -0] with per-image random floating-point dx.
+  - regenerated motion_sim dataset using the trimmed dataset_path manifests (global area rank drop low/high 5%).
 - status:
-  - implemented and regenerated on 2026-04-20.
+  - implemented and validated on 2026-04-22.
 - key_behavior:
-  - updated /home/huhao/adv_ir/source/motion_blur_dataset_builder.py:
-    - changed default dmax range to `dmax_min=-0.02`, `dmax_max=-0.0`.
-  - regenerated /home/huhao/adv_ir/dataset/motion_sim with 3-GPU sharding:
-    - train: 16384
-    - val: 1024
-    - test: 1024
-    - merged train shard manifests into train/manifest.json and train/summary.json.
-  - updated docs:
-    - /home/huhao/adv_ir/source/doc/module_document.txt
-    - /home/huhao/adv_ir/source/doc/work_log.txt
+  - reran /home/huhao/adv_ir/source/motion_blur_dataset_builder.py with updated
+    /home/huhao/adv_ir/dataset_path/promptir_clear_depth_sets_only.json.
+  - train generation:
+    - 3 shards on cuda:0/1/2 with counts 5462/5461/5461 and merged into train/manifest.json + train/summary.json.
+  - val/test generation:
+    - rebuilt with count=1024 each on cuda:0/1.
+  - final motion_sim summary:
+    - train: count=16384, source_pool_size=15785, sample_with_replacement=true
+    - val: count=1024, source_pool_size=870, sample_with_replacement=true
+    - test: count=1024, source_pool_size=874, sample_with_replacement=true
+  - demo summary:
+    - /home/huhao/adv_ir/tmp_demo/motion_sim_regen_trim5/summary.json
 - latest_demo_output:
-  - /home/huhao/adv_ir/tmp_demo/motion_sim_dmax002_smoke/train/summary.json
+  - /home/huhao/adv_ir/tmp_demo/motion_sim_regen_trim5/summary.json
 - latest_dataset_output:
-  - /home/huhao/adv_ir/dataset/motion_sim (dmax in [-0.02, -0])
+  - /home/huhao/adv_ir/dataset/motion_sim/{train,val,test}
 - key_docs_synced:
-  - /home/huhao/adv_ir/source/doc/module_document.txt
   - /home/huhao/adv_ir/source/doc/work_log.txt
 
 quick_continue_checklist:
-- run syntax check:
-  - conda run -n advir --no-capture-output python -m py_compile /home/huhao/adv_ir/source/motion_blur_dataset_builder.py
-- verify dataset counts and dmax range:
-  - python - <<'PY'
-    import json
-    from pathlib import Path
-    root = Path('/home/huhao/adv_ir/dataset/motion_sim')
-    for s, e in [('train', 16384), ('val', 1024), ('test', 1024)]:
-        ni = len(list((root / s / 'input').glob('*.png')))
-        nt = len(list((root / s / 'target').glob('*.png')))
-        print(s, ni, nt, ni == e and nt == e)
-        m = json.loads((root / s / 'manifest.json').read_text(encoding='utf-8'))
-        dvals = [float(r['dmax']) for r in m['records']]
-        print(s, min(dvals), max(dvals))
-    PY
+- run paired loader smoke against refreshed motion_sim:
+  - conda run -n promptir --no-capture-output python /home/huhao/adv_ir/PromptIR/adv_train.py --help | rg "motion_blur_dir|de_type"
+- if strict no-replacement is required for val/test, regenerate with count <= source_pool_size (870/874).
 
 recent_sessions:
+
+- date: 2026-04-22
+  title: regenerate motion_sim from trimmed dataset_path manifests
+  changes:
+  - regenerated /home/huhao/adv_ir/dataset/motion_sim/train via 3 shards:
+    - shard0: count=5462, seed=123, device=cuda:0, index_offset=0
+    - shard1: count=5461, seed=124, device=cuda:1, index_offset=5462
+    - shard2: count=5461, seed=125, device=cuda:2, index_offset=10923
+  - merged train shard manifests/summaries into:
+    - /home/huhao/adv_ir/dataset/motion_sim/train/manifest.json
+    - /home/huhao/adv_ir/dataset/motion_sim/train/summary.json
+  - regenerated val/test:
+    - /home/huhao/adv_ir/dataset/motion_sim/val (1024)
+    - /home/huhao/adv_ir/dataset/motion_sim/test (1024)
+  - wrote compact run summary:
+    - /home/huhao/adv_ir/tmp_demo/motion_sim_regen_trim5/summary.json
+  - updated docs:
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  validations:
+  - split integrity passed:
+    - train input/target/manifest/summary counts = 16384/16384/16384/16384
+    - val input/target/manifest/summary counts = 1024/1024/1024/1024
+    - test input/target/manifest/summary counts = 1024/1024/1024/1024
+
+- date: 2026-04-22
+  title: trim dataset_path clear-image manifests by global area rank (drop low/high 5%)
+  changes:
+  - added /home/huhao/adv_ir/source/filter_promptir_clear_depth_splits_by_area_percentile.py
+  - rebuilt and overwritten:
+    - /home/huhao/adv_ir/dataset_path/promptir_clear_depth_splits.json
+    - /home/huhao/adv_ir/dataset_path/promptir_clear_depth_sets_only.json
+    - /home/huhao/adv_ir/dataset_path/promptir_clear_depth_splits_stats.json
+  - updated docs:
+    - /home/huhao/adv_ir/source/doc/dataset_path.txt
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  validations:
+  - script run passed:
+    - conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/filter_promptir_clear_depth_splits_by_area_percentile.py --trim_ratio_each_side 0.05 --demo_dir /home/huhao/adv_ir/tmp_demo/dataset_path_trim_by_area
+  - output consistency passed:
+    - clear counts aligned across `splits/sets_only/stats`
+    - all missing-path counters remain zero
+
+- date: 2026-04-22
+  title: remove offset visualization components to keep adv_train path concise
+  changes:
+  - updated /home/huhao/adv_ir/PromptIR/options.py:
+    - removed `--adv_save_offset_maps`.
+    - kept gaussian offset optimization args.
+  - updated /home/huhao/adv_ir/source/promptir_adv_training.py:
+    - removed offset visualization helper functions and save branches.
+    - removed manifest-side `offset_vis` load logic.
+    - kept core adversarial generation and gaussian offset optimization path.
+  - updated docs:
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  validations:
+  - syntax checks passed:
+    - conda run -n promptir --no-capture-output python -m py_compile /home/huhao/adv_ir/PromptIR/options.py
+    - conda run -n advir --no-capture-output python -m py_compile /home/huhao/adv_ir/source/promptir_adv_training.py
+
+- date: 2026-04-22
+  title: restore gaussian-offset CLI args and add offset visualization in adv resample
+  changes:
+  - updated /home/huhao/adv_ir/PromptIR/options.py:
+    - restored gaussian-offset CLI args:
+      --adv_gaussian_enable_offset
+      --adv_gaussian_offset_max
+      --adv_gaussian_offset_lambda_first_order
+      --adv_gaussian_offset_lambda_second_order
+    - added --adv_save_offset_maps.
+  - updated /home/huhao/adv_ir/source/promptir_adv_training.py:
+    - added offset-map extraction from haze/motion controllers.
+    - added composite offset visualization writer (offset_x / offset_y / offset_mag / offset_quiver).
+    - added manifest `offset_vis` serialization and reload support.
+  - updated docs:
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  validations:
+  - syntax checks passed:
+    - conda run -n promptir --no-capture-output python -m py_compile /home/huhao/adv_ir/PromptIR/options.py /home/huhao/adv_ir/PromptIR/adv_train.py
+    - conda run -n advir --no-capture-output python -m py_compile /home/huhao/adv_ir/source/promptir_adv_training.py
+  - CLI help verification passed:
+    - conda run -n promptir --no-capture-output python /home/huhao/adv_ir/PromptIR/adv_train.py --help | rg \"adv_gaussian_enable_offset|adv_gaussian_offset_max|adv_gaussian_offset_lambda_first_order|adv_gaussian_offset_lambda_second_order|adv_save_offset_maps\"
+  - smoke training passed (sandbox-external):
+    - WANDB_MODE=offline conda run -n promptir --no-capture-output python /home/huhao/adv_ir/PromptIR/adv_train.py --model_arch nafnet --de_type dehaze --epochs 1 --batch_size 1 --num_gpus 0 --degradation_size 8 --adv_samples_per_resample 2 --adv_map_interp_mode gaussian --adv_gaussian_enable_offset --adv_gaussian_offset_max 0.5 --adv_gaussian_offset_lambda_first_order 0.005 --adv_gaussian_offset_lambda_second_order 0.02 --adv_save_offset_maps ...
+    - output summary: /home/huhao/adv_ir/tmp_demo/adv_offset_smoke/summary.json
+
+- date: 2026-04-20
+  title: add motion_blur adv50 launcher script aligned to haze template
+  changes:
+  - added /home/huhao/adv_ir/exe/motion_blur/run_train_nafnet_adv50.sh:
+    - mirrors /home/huhao/adv_ir/exe/haze/run_train_nafnet_adv50.sh style and command structure.
+    - switched to `--de_type motion_blur` and pinned `--motion_blur_dir /home/huhao/adv_ir/dataset/motion_sim`.
+    - keeps adv50 hyper-parameters and adds motion-specific adv args:
+      --adv_motion_num_steps 16, --adv_motion_dmax -0.02, --adv_motion_dlambda 0.0.
+  - updated docs:
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  validations:
+  - syntax check passed:
+    - bash -n /home/huhao/adv_ir/exe/motion_blur/run_train_nafnet_adv50.sh
+  - smoke demo passed:
+    - /home/huhao/adv_ir/tmp_demo/motion_blur_run_train_nafnet_adv50_smoke/summary.json
+
+- date: 2026-04-20
+  title: sample random motion dmax from [dmax/2, dmax]
+  changes:
+  - updated /home/huhao/adv_ir/source/degradation.py:
+    - in `random_motion_blur_degradation_config_from_image(...)`, when dmax is not None, sampled cfg.dmax uniformly from [dmax/2, dmax] with sign-safe bounds.
+    - updated function docstring to state half-range behavior explicitly.
+  - updated /home/huhao/adv_ir/tests/test_degradations.py:
+    - changed range test from fixed dmax assertion to interval assertion for negative dmax.
+    - added positive dmax half-range test.
+  - updated docs:
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  validations:
+  - syntax check passed:
+    - conda run -n advir --no-capture-output python -m py_compile /home/huhao/adv_ir/source/degradation.py /home/huhao/adv_ir/source/promptir_attack.py /home/huhao/adv_ir/tests/test_degradations.py /home/huhao/adv_ir/tests/test_promptir_attack_motion_blur.py
+  - tests passed:
+    - conda run -n advir --no-capture-output pytest -q /home/huhao/adv_ir/tests/test_degradations.py /home/huhao/adv_ir/tests/test_promptir_attack_motion_blur.py
+    - result: 17 passed
+  - smoke demo passed:
+    - /home/huhao/adv_ir/tmp_demo/motion_blur_dmax_half_range_smoke/summary.json
+
+- date: 2026-04-20
+  title: switch motion blur builder to haze-style random config interface
+  changes:
+  - updated /home/huhao/adv_ir/source/degradation.py:
+    - added `random_motion_blur_degradation_config_from_image(...)`.
+    - added `_extract_chw_from_image(...)` helper and reused in haze random config.
+  - updated /home/huhao/adv_ir/source/promptir_attack.py:
+    - `build_motion_blur_controller_from_image(...)` now calls random motion config interface.
+  - updated /home/huhao/adv_ir/tests/test_degradations.py:
+    - added `test_random_motion_blur_degradation_config_from_image_ranges`.
+  - updated docs:
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  validations:
+  - syntax check passed:
+    - conda run -n advir --no-capture-output python -m py_compile /home/huhao/adv_ir/source/degradation.py /home/huhao/adv_ir/source/promptir_attack.py /home/huhao/adv_ir/source/promptir_adv_training.py /home/huhao/adv_ir/tests/test_degradations.py /home/huhao/adv_ir/tests/test_promptir_attack_motion_blur.py
+  - tests passed:
+    - conda run -n advir --no-capture-output pytest -q /home/huhao/adv_ir/tests/test_degradations.py /home/huhao/adv_ir/tests/test_promptir_attack_motion_blur.py
+    - result: 16 passed
+  - smoke demo passed:
+    - /home/huhao/adv_ir/tmp_demo/motion_blur_random_interface_smoke/summary.json
+
+- date: 2026-04-20
+  title: add motion_blur online adversarial generation path (PromptIR adv mix)
+  changes:
+  - updated /home/huhao/adv_ir/source/promptir_attack.py:
+    - added `build_motion_blur_controller_from_image(...)`.
+    - generalized `run_single_image_adversarial_degradation_search(...)` for haze + motion_blur controllers.
+  - updated /home/huhao/adv_ir/source/promptir_adv_training.py:
+    - added motion source indexing from de_type id=5 (`target_id` as clean source).
+    - added subset routing (`haze`, `motion_blur`) during resample.
+    - generalized manifest loading and runtime logs from haze-only to multi-subset online adv.
+  - updated /home/huhao/adv_ir/PromptIR/options.py:
+    - added motion adversarial CLI args:
+      --adv_motion_num_steps, --adv_motion_dmax, --adv_motion_dlambda
+  - added /home/huhao/adv_ir/tests/test_promptir_attack_motion_blur.py
+  - updated docs:
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  validations:
+  - syntax check passed:
+    - conda run -n promptir --no-capture-output python -m py_compile /home/huhao/adv_ir/PromptIR/options.py
+    - conda run -n advir --no-capture-output python -m py_compile /home/huhao/adv_ir/source/promptir_attack.py /home/huhao/adv_ir/source/promptir_adv_training.py /home/huhao/adv_ir/tests/test_promptir_attack_motion_blur.py /home/huhao/adv_ir/tests/test_degradations.py
+  - tests passed:
+    - conda run -n advir --no-capture-output pytest -q /home/huhao/adv_ir/tests/test_degradations.py /home/huhao/adv_ir/tests/test_promptir_attack_motion_blur.py
+    - result: 15 passed
+  - smoke demo passed:
+    - /home/huhao/adv_ir/tmp_demo/motion_blur_adv_online_smoke/summary.json
+    - summary confirms attack_subsets=['motion_blur'] and generated adv_records=2.
 
 - date: 2026-04-20
   title: update motion_sim dmax range to [-0.02, -0] and regenerate dataset
