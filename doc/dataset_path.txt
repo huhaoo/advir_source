@@ -1,6 +1,6 @@
 dataset_path
 
-last_update: 2026-04-22
+last_update: 2026-04-26
 workspace_root: /home/huhao/adv_ir
 
 purpose:
@@ -17,6 +17,156 @@ generated_manifest_files:
 - /home/huhao/adv_ir/dataset_path/promptir_clear_depth_splits.json
 - /home/huhao/adv_ir/dataset_path/promptir_clear_depth_sets_only.json
 - /home/huhao/adv_ir/dataset_path/promptir_clear_depth_splits_stats.json
+
+additional_haze_datasets:
+- RESIDE-OTS-SIM:
+  - root: /home/huhao/adv_ir/dataset/haze/reside_ots_sim
+  - source clear split manifest: /home/huhao/adv_ir/dataset_path/promptir_clear_depth_sets_only.json
+  - generation script: /home/huhao/adv_ir/source/reside_ots_sim_haze_dataset_builder.py
+  - split layout:
+    - train: /home/huhao/adv_ir/dataset/haze/reside_ots_sim/train/{input,target,manifest.json,summary.json}
+    - val: /home/huhao/adv_ir/dataset/haze/reside_ots_sim/val/{input,target,manifest.json,summary.json}
+    - test: /home/huhao/adv_ir/dataset/haze/reside_ots_sim/test/{input,target,manifest.json,summary.json}
+  - counts:
+    - train: 16384
+    - val: 1024
+    - test: 1024
+  - synthesis rule:
+    - per-image haze uses scalar fog density `beta` and scalar global light `A`:
+      - `I = J * exp(-beta) + A * (1 - exp(-beta))`
+    - random sampling for both `A` and `beta` uses exp-uniform:
+      - `x = exp(uniform(log(min), log(max)))`
+    - configured ranges:
+      - `A in [0.5, 1.0]`
+      - `beta in [0.1, 1.0]`
+- NH-HAZE:
+  - source zip: /home/huhao/adv_ir/dataset_zip/haze/NH-HAZE.zip
+  - organized root: /home/huhao/adv_ir/dataset/haze/nh_haze
+  - paired layout:
+    - input: /home/huhao/adv_ir/dataset/haze/nh_haze/input
+    - target: /home/huhao/adv_ir/dataset/haze/nh_haze/target
+  - raw extracted files: /home/huhao/adv_ir/dataset/haze/nh_haze/raw/NH-HAZE
+  - manifest: /home/huhao/adv_ir/dataset/haze/nh_haze/manifest.json
+  - summary: /home/huhao/adv_ir/dataset/haze/nh_haze/meta/summary.json
+  - estimated physics maps:
+    - root: /home/huhao/adv_ir/dataset/haze/nh_haze/estimates
+    - per-image csv: /home/huhao/adv_ir/dataset/haze/nh_haze/estimates/per_image_estimates.csv
+    - summary: /home/huhao/adv_ir/dataset/haze/nh_haze/estimates/summary.json
+    - transmission maps: /home/huhao/adv_ir/dataset/haze/nh_haze/estimates/transmission
+    - optical-density proxy maps: /home/huhao/adv_ir/dataset/haze/nh_haze/estimates/optical_density
+    - color previews: /home/huhao/adv_ir/dataset/haze/nh_haze/estimates/preview
+  - derived global-light mapping:
+    - root: /home/huhao/adv_ir/dataset_ours/haze/nh_haze_light_0p9_1
+    - materialized paired dataset:
+      - input: /home/huhao/adv_ir/dataset_ours/haze/nh_haze_light_0p9_1/input
+      - target: /home/huhao/adv_ir/dataset_ours/haze/nh_haze_light_0p9_1/target
+      - mapped RGB light json: /home/huhao/adv_ir/dataset_ours/haze/nh_haze_light_0p9_1/light_rgb
+      - mapped gray light json: /home/huhao/adv_ir/dataset_ours/haze/nh_haze_light_0p9_1/light_gray
+      - mapped RGB light npy: /home/huhao/adv_ir/dataset_ours/haze/nh_haze_light_0p9_1/light_rgb_npy
+      - mapped gray light npy: /home/huhao/adv_ir/dataset_ours/haze/nh_haze_light_0p9_1/light_gray_npy
+      - mapped RGB light maps: /home/huhao/adv_ir/dataset_ours/haze/nh_haze_light_0p9_1/light_rgb_map
+      - mapped gray light maps: /home/huhao/adv_ir/dataset_ours/haze/nh_haze_light_0p9_1/light_gray_map
+    - per-image csv: /home/huhao/adv_ir/dataset_ours/haze/nh_haze_light_0p9_1/per_image_global_light_0p9_1.csv
+    - manifest: /home/huhao/adv_ir/dataset_ours/haze/nh_haze_light_0p9_1/manifest.json
+    - summary: /home/huhao/adv_ir/dataset_ours/haze/nh_haze_light_0p9_1/summary.json
+    - note: maps estimated atmospheric_light_intensity_mean to [0.9, 1.0], and also provides per-channel RGB values mapped independently to [0.9, 1.0].
+  - derived refractive-index proxy datasets:
+    - mean-mapped root: /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p4
+    - smoothed root: /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p4_smooth
+    - layout for both:
+      - input/*.png
+      - target/*.png
+      - refractive_index/*.png
+      - refractive_index_npy/*.npy
+      - synthetic_input/*.png
+      - preview/*.png
+      - manifest.csv
+      - manifest.json
+      - synthesis_manifest.csv
+      - synthesis_manifest.json
+      - synthesis_summary.json
+      - summary.json
+    - note: refractive_index is the optical-density proxy `-log(transmission)`, mean-matched per image to about 0.4 in [0, 1]; smoothed version uses Gaussian smoothing radius 16 px and then re-matches mean to 0.4.
+    - synthesis note: synthetic_input is generated from target, refractive_index_npy, and mapped RGB global light by `I = J * exp(-rho) + A * (1 - exp(-rho))`; original input remains unchanged for reference.
+  - refractive-index proxy datasets (mean=0.5, no light-up step):
+    - root: /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p5
+    - smooth root: /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p5_smooth
+    - layout for both:
+      - input/*.png (synthesized with original atmospheric light, directly testable)
+      - target/*.png
+      - refractive_index/*.png
+      - refractive_index_npy/*.npy
+      - preview/*.png
+      - manifest.csv
+      - manifest.json
+      - summary.json
+      - synthesis_manifest.csv
+      - synthesis_manifest.json
+      - synthesis_summary.json
+    - note: no global-light min-max raising is applied; airlight comes from original atmospheric_light_{r,g,b} in per_image_estimates.csv.
+  - stepwise testing datasets (sequential pipeline):
+    - step1 (light up only): /home/huhao/adv_ir/dataset_ours/haze/nh_haze_step1_light_up
+    - step2 (light up + refractive down): /home/huhao/adv_ir/dataset_ours/haze/nh_haze_step2_light_up_refractive_down
+    - step3 (light up + refractive down + smooth): /home/huhao/adv_ir/dataset_ours/haze/nh_haze_step3_light_up_refractive_down_smooth
+    - shared layout for each step:
+      - input/*.png (processed input ready for testing)
+      - target/*.png
+      - input_original/*.png
+      - refractive_index_npy/*.npy
+      - refractive_index/*.png
+      - airlight_rgb_npy/*.npy
+      - manifest.csv
+      - summary.json
+    - pipeline note:
+      - step1: raise per-image global airlight RGB via min-max mapping to [0.9, 1.0], keep original refractive proxy.
+      - step2: on top of step1 airlight, lower refractive proxy by bounded mean-matching to 0.4.
+      - step3: on top of step2 refractive proxy, apply Gaussian smoothing radius 16 and re-match mean to 0.4.
+      - synthesis formula for all steps: `I = J * exp(-rho) + A * (1 - exp(-rho))`.
+  - no-step1 refractive-mean0.7 testing datasets:
+    - mapped (rho mean target 0.7): /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p7_no_step1
+    - mapped+smooth (rho mean target 0.7): /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p7_no_step1_smooth
+    - shared layout for both:
+      - input/*.png (processed input ready for testing)
+      - target/*.png
+      - input_original/*.png
+      - refractive_index_npy/*.npy
+      - refractive_index/*.png
+      - airlight_rgb_npy/*.npy
+      - manifest.csv
+      - summary.json
+    - pipeline note:
+      - step1 is skipped (no global light boosting); use original estimated atmospheric light per image.
+      - mapped set lowers refractive proxy with bounded mean-matching to 0.7.
+      - smooth set applies Gaussian smoothing radius 16 and re-matches refractive mean to 0.7.
+      - synthesis formula: `I = J * exp(-rho) + A * (1 - exp(-rho))`.
+  - 8-combo datasets (mean x smooth x final white-shift lightup):
+    - generation script: /home/huhao/adv_ir/source/build_nh_haze_8combo_datasets.py
+    - combos:
+      - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_mean0p4_smooth0_lightup0
+      - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_mean0p4_smooth0_lightup1
+      - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_mean0p4_smooth1_lightup0
+      - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_mean0p4_smooth1_lightup1
+      - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_mean0p8_smooth0_lightup0
+      - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_mean0p8_smooth0_lightup1
+      - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_mean0p8_smooth1_lightup0
+      - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_mean0p8_smooth1_lightup1
+    - shared layout for each combo:
+      - input/*.png (processed input ready for testing)
+      - target/*.png
+      - input_original/*.png
+      - refractive_index_npy/*.npy
+      - refractive_index/*.png
+      - manifest.csv
+      - summary.json
+    - pipeline note:
+      - base airlight A uses original atmospheric_light_{r,g,b} estimates (no min-max global-light remapping).
+      - refractive proxy rho is mean-matched per image to target mean (0.4 or 0.8).
+      - smooth=1 applies Gaussian smoothing radius 16 then re-matches mean.
+      - lightup=1 applies final white-shift: `I <- I * (1 - alpha) + alpha`, `alpha=0.12`.
+      - synthesis formula before final white-shift: `I = J * exp(-rho) + A * (1 - exp(-rho))`.
+  - count: 55 paired samples, all 1200x1600.
+  - note: input/target files are hardlinks to raw NH-HAZE hazy/GT files to avoid duplicate storage.
+  - estimate note: optical_density = -log(transmission) is a haze-strength proxy, not a physically calibrated refractive index.
 
 path_mapping_rules:
 - noisy:
@@ -47,6 +197,7 @@ validation_snapshot:
 notes:
 - paths are absolute and point to the resolved dataset root:
   /home/bbnclxy/ext8t-2/huhao/adv_ir/dataset
+- dataset_ours NH-HAZE global-light mapping is materialized under /home/huhao/adv_ir/dataset_ours/haze/nh_haze_light_0p9_1 with copied input/target images plus per-sample light files.
 - depth is only available for haze-derived clear images in this dataset layout.
 - trimming is executed by:
   /home/huhao/adv_ir/source/filter_promptir_clear_depth_splits_by_area_percentile.py

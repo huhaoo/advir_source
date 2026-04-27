@@ -21,6 +21,8 @@ PROMPTIR_ROOT = PROJECT_ROOT / "PromptIR"
 if str(PROMPTIR_ROOT) not in sys.path:
     sys.path.insert(0, str(PROMPTIR_ROOT))
 
+from util.image_io import load_rgb_tensor as _load_rgb_tensor  # noqa: E402
+from util.image_io import tensor_to_uint8_hwc as _tensor_to_rgb_uint8  # noqa: E402
 from net.model import build_promptir_model  # noqa: E402
 from utils.pytorch_ssim import ssim as pytorch_ssim  # noqa: E402
 
@@ -109,11 +111,6 @@ def _scan_images(root: Path, recursive: bool) -> list[Path]:
     return sorted(files)
 
 
-def _load_rgb_tensor(path: Path) -> torch.Tensor:
-    image = np.asarray(Image.open(path).convert("RGB"), dtype=np.float32) / 255.0
-    return torch.from_numpy(image).permute(2, 0, 1).unsqueeze(0).contiguous()
-
-
 def _pad_to_multiple_of(x: torch.Tensor, multiple: int = 8) -> tuple[torch.Tensor, tuple[int, int]]:
     h = int(x.shape[-2])
     w = int(x.shape[-1])
@@ -183,11 +180,6 @@ def _restore_with_tiling(model: torch.nn.Module, haze: torch.Tensor, tile_size: 
             weight[:, :, y0:y1, x0:x1] += 1.0
 
     return output / torch.clamp(weight, min=1e-6)
-
-
-def _tensor_to_rgb_uint8(tensor: torch.Tensor) -> np.ndarray:
-    image = tensor[0].detach().cpu().permute(1, 2, 0).clamp(0.0, 1.0).numpy()
-    return (image * 255.0 + 0.5).astype(np.uint8)
 
 
 def _distribution(values: list[float]) -> dict[str, float]:

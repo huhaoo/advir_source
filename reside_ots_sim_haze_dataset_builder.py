@@ -7,18 +7,13 @@ import random
 from pathlib import Path
 
 import torch
-from torch import Tensor
 
 try:
-    from control_map import ControlMapConfig
-    from degradation import MotionBlurDegradationConfig, motion_blur_degradation
     from util.image_io import load_rgb_tensor as _load_rgb_tensor
     from util.image_io import save_rgb_tensor as _save_rgb_tensor
     from util.runtime import resolve_runtime_device as _resolve_runtime_device
     from util.runtime import seed_everything as _seed_everything
 except ModuleNotFoundError:
-    from .control_map import ControlMapConfig
-    from .degradation import MotionBlurDegradationConfig, motion_blur_degradation
     from .util.image_io import load_rgb_tensor as _load_rgb_tensor
     from .util.image_io import save_rgb_tensor as _save_rgb_tensor
     from .util.runtime import resolve_runtime_device as _resolve_runtime_device
@@ -27,7 +22,7 @@ except ModuleNotFoundError:
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SPLITS_JSON = PROJECT_ROOT / "dataset_path" / "promptir_clear_depth_sets_only.json"
-DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "dataset" / "motion_sim"
+DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "dataset" / "haze" / "reside_ots_sim"
 
 
 def _probe_device_available(device: torch.device) -> tuple[bool, str | None]:
@@ -41,12 +36,15 @@ def _probe_device_available(device: torch.device) -> tuple[bool, str | None]:
 def _load_split_clear_paths(splits_json: Path, split: str) -> list[Path]:
     if not splits_json.exists():
         raise FileNotFoundError(f"splits_json not found: {splits_json}")
+
     obj = json.loads(splits_json.read_text(encoding="utf-8"))
     if "splits" not in obj or split not in obj["splits"]:
         raise KeyError(f"split not found in splits_json: {split}")
-    paths = obj["splits"][split].get("clear_paths", [])
+
+    split_obj = obj["splits"][split]
+    clear_paths = split_obj.get("clear_paths", [])
     resolved: list[Path] = []
-    for p in paths:
+    for p in clear_paths:
         pp = Path(p)
         if pp.exists():
             resolved.append(pp)
@@ -70,67 +68,44 @@ def _select_source_paths(clear_paths: list[Path], count: int, rng: random.Random
     return shuffled + extra
 
 
-def _effective_magnitude_for_hw(dmax: float, h: int, w: int) -> float:
-    dmax_f = float(dmax)
-    if dmax_f < 0:
-        diagonal = math.sqrt(float(h * h + w * w))
-        return (-dmax_f) * diagonal
-    return abs(dmax_f)
-
-
-def _build_dx_from_params(
-    h: int,
-    w: int,
-    dmax: float,
-    theta_rad: float,
-    dtype: torch.dtype,
-    device: torch.device,
-) -> tuple[Tensor, float, float, float]:
-    magnitude = _effective_magnitude_for_hw(dmax=dmax, h=h, w=w)
-    vx = magnitude * math.cos(float(theta_rad))
-    vy = magnitude * math.sin(float(theta_rad))
-
-    dx = torch.empty((1, 2, int(h), int(w)), dtype=dtype, device=device)
-    dx[:, 0:1, :, :] = float(vx)
-    dx[:, 1:2, :, :] = float(vy)
-    return dx, float(magnitude), float(vx), float(vy)
-
-
-def _sample_random_dmax_theta(
-    dmax_min: float,
-    dmax_max: float,
-    theta_min: float,
-    theta_max: float,
-    rng: random.Random,
-) -> tuple[float, float]:
-    lo = float(dmax_min)
-    hi = float(dmax_max)
+def _sample_exp_uniform(value_min: float, value_max: float, rng: random.Random, name: str) -> float:
+    lo = float(value_min)
+    hi = float(value_max)
+    if lo <= 0.0 or hi <= 0.0:
+        raise ValueError(f"{name} exp-uniform range must be > 0, got {(value_min, value_max)}")
     if lo > hi:
-        raise ValueError(f"dmax_min must be <= dmax_max, got {(dmax_min, dmax_max)}")
-    t_lo = float(theta_min)
-    t_hi = float(theta_max)
-    if t_lo > t_hi:
-        raise ValueError(f"theta_min must be <= theta_max, got {(theta_min, theta_max)}")
-    dmax = float(rng.uniform(lo, hi))
-    theta = float(rng.uniform(t_lo, t_hi))
-    return dmax, theta
+        raise ValueError(f"{name}_min must be <= {name}_max, got {(value_min, value_max)}")
+    lo_log = math.log(lo)
+    hi_log = math.log(hi)
+    return float(math.exp(rng.uniform(lo_log, hi_log)))
 
 
-def generate_motion_blur_split_dataset(
+def _apply_haze_with_scalar_params(
+    clear_image: torch.Tensor,
+    fog_density: float,
+    global_light_intensity: float,
+) -> tuple[torch.Tensor, float]:
+    if clear_image.ndim != 4:
+        raise ValueError(f"clear_image must be BCHW, got shape={tuple(clear_image.shape)}")
+
+    transmission = torch.exp(
+        torch.full((1, 1, 1, 1), fill_value=-float(fog_density), dtype=clear_image.dtype, device=clear_image.device)
+    )
+    airlight = torch.full_like(clear_image, fill_value=float(global_light_intensity))
+    hazy_image = clear_image * transmission + airlight * (1.0 - transmission)
+    return hazy_image.clamp(0.0, 1.0), float(transmission.item())
+
+
+def generate_haze_split_dataset(
     split: str,
     count: int,
     splits_json: Path,
     output_root: Path,
     seed: int,
-    dmax_min: float,
-    dmax_max: float,
-    theta_min: float,
-    theta_max: float,
-    num_steps: int,
-    batchify_steps: bool,
-    mode: str,
-    padding_mode: str,
-    align_corners: bool,
+    global_light_min: float,
+    global_light_max: float,
+    fog_density_min: float,
+    fog_density_max: float,
     device_name: str,
     progress_interval: int,
     index_offset: int = 0,
@@ -140,8 +115,6 @@ def generate_motion_blur_split_dataset(
         raise ValueError(f"split must be one of train/val/test, got {split}")
     if count <= 0:
         raise ValueError(f"count must be > 0, got {count}")
-    if num_steps <= 0:
-        raise ValueError(f"num_steps must be > 0, got {num_steps}")
     if progress_interval <= 0:
         raise ValueError(f"progress_interval must be > 0, got {progress_interval}")
     if int(index_offset) < 0:
@@ -160,6 +133,7 @@ def generate_motion_blur_split_dataset(
             device = torch.device("cpu")
         else:
             raise RuntimeError(f"requested device {device} is unavailable: {probe_error}")
+
     clear_paths = _load_split_clear_paths(splits_json=splits_json, split=split)
     selected_paths = _select_source_paths(clear_paths=clear_paths, count=int(count), rng=rng)
 
@@ -170,42 +144,18 @@ def generate_motion_blur_split_dataset(
     input_dir.mkdir(parents=True, exist_ok=True)
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    blur = motion_blur_degradation(
-        MotionBlurDegradationConfig(
-            map_config=ControlMapConfig(1, 1, 1, 1),
-            num_steps=int(num_steps),
-            mode=str(mode),
-            padding_mode=str(padding_mode),
-            align_corners=bool(align_corners),
-            batchify_steps=bool(batchify_steps),
-            dmax=None,
-            dlambda=0.0,
-        )
-    ).to(device=device)
-    blur.eval()
-
     records: list[dict[str, object]] = []
     for idx, source_clear in enumerate(selected_paths):
         i_gt = _load_rgb_tensor(source_clear).to(device=device, dtype=torch.float32)
-        _, _, h, w = i_gt.shape
-        dmax_i, theta_i = _sample_random_dmax_theta(
-            dmax_min=float(dmax_min),
-            dmax_max=float(dmax_max),
-            theta_min=float(theta_min),
-            theta_max=float(theta_max),
-            rng=rng,
-        )
-        dx, dx_mag, vx, vy = _build_dx_from_params(
-            h=h,
-            w=w,
-            dmax=float(dmax_i),
-            theta_rad=float(theta_i),
-            dtype=i_gt.dtype,
-            device=device,
-        )
+        global_light = _sample_exp_uniform(global_light_min, global_light_max, rng=rng, name="global_light")
+        fog_density = _sample_exp_uniform(fog_density_min, fog_density_max, rng=rng, name="fog_density")
 
         with torch.no_grad():
-            i_deg = blur(image=i_gt, dx=dx)
+            i_deg, transmission_scalar = _apply_haze_with_scalar_params(
+                clear_image=i_gt,
+                fog_density=float(fog_density),
+                global_light_intensity=float(global_light),
+            )
 
         image_id = f"{int(index_offset) + idx:06d}"
         input_path = input_dir / f"{image_id}.png"
@@ -213,7 +163,7 @@ def generate_motion_blur_split_dataset(
         _save_rgb_tensor(i_deg.detach().cpu(), input_path)
         _save_rgb_tensor(i_gt.detach().cpu(), target_path)
 
-        diag = math.sqrt(float(h * h + w * w))
+        _, _, h, w = i_gt.shape
         records.append(
             {
                 "id": image_id,
@@ -221,38 +171,30 @@ def generate_motion_blur_split_dataset(
                 "target_path": str(target_path),
                 "source_clear_path": str(source_clear),
                 "source_hw": [int(h), int(w)],
-                "source_diagonal": float(diag),
-                "dmax": float(dmax_i),
-                "theta_rad": float(theta_i),
-                "theta_deg": float(theta_i * 180.0 / math.pi),
-                "dx_magnitude": float(dx_mag),
-                "dx_value_x": float(vx),
-                "dx_value_y": float(vy),
+                "global_light_intensity": float(global_light),
+                "fog_density": float(fog_density),
+                "transmission_scalar": float(transmission_scalar),
+                "sampling_mode": "exp_uniform",
             }
         )
 
         if (idx + 1) % int(progress_interval) == 0 or (idx + 1) == int(count):
-            print(f"[motion_blur_dataset_builder] split={split} generated {idx + 1}/{count}")
+            print(f"[reside_ots_sim_haze_dataset_builder] split={split} generated {idx + 1}/{count}")
 
     manifest = {
         "split": split,
         "count": int(count),
         "seed": int(seed),
         "splits_json": str(splits_json),
-        "per_image_dx_sampling": {
-            "dmax_min": float(dmax_min),
-            "dmax_max": float(dmax_max),
-            "theta_min": float(theta_min),
-            "theta_max": float(theta_max),
-            "dmax_rule": "if dmax < 0: |dx| = (-dmax) * diagonal_length; else |dx| = abs(dmax)",
+        "sampling": {
+            "mode": "exp_uniform",
+            "global_light_min": float(global_light_min),
+            "global_light_max": float(global_light_max),
+            "fog_density_min": float(fog_density_min),
+            "fog_density_max": float(fog_density_max),
+            "formula": "x = exp(uniform(log(min), log(max)))",
         },
-        "motion_blur": {
-            "num_steps": int(num_steps),
-            "batchify_steps": bool(batchify_steps),
-            "mode": str(mode),
-            "padding_mode": str(padding_mode),
-            "align_corners": bool(align_corners),
-        },
+        "haze_model": "I = J * exp(-beta) + A * (1 - exp(-beta)), scalar beta and scalar A per image",
         "requested_device": str(requested_device),
         "resolved_device": str(device),
         "device_fallback_reason": fallback_reason,
@@ -268,15 +210,11 @@ def generate_motion_blur_split_dataset(
         "requested_device": str(requested_device),
         "resolved_device": str(device),
         "device_fallback_reason": fallback_reason,
-        "dmax_min": float(dmax_min),
-        "dmax_max": float(dmax_max),
-        "theta_min": float(theta_min),
-        "theta_max": float(theta_max),
-        "num_steps": int(num_steps),
-        "batchify_steps": bool(batchify_steps),
-        "mode": str(mode),
-        "padding_mode": str(padding_mode),
-        "align_corners": bool(align_corners),
+        "global_light_min": float(global_light_min),
+        "global_light_max": float(global_light_max),
+        "fog_density_min": float(fog_density_min),
+        "fog_density_max": float(fog_density_max),
+        "sampling_mode": "exp_uniform",
         "source_pool_size": len(clear_paths),
         "sample_with_replacement": bool(count > len(clear_paths)),
     }
@@ -292,39 +230,22 @@ def generate_motion_blur_split_dataset(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Generate one split of motion-blur paired dataset from promptir_clear_depth_sets_only.json. "
-            "Per-image dx is independently sampled by dmax/theta ranges."
+            "Generate one split of RESIDE-OTS-like synthetic haze paired dataset from "
+            "promptir_clear_depth_sets_only.json using scalar global-light and fog-density "
+            "sampled by exp-uniform (log-uniform)."
         )
     )
     parser.add_argument("--split", type=str, required=True, choices=["train", "val", "test"], help="Dataset split.")
     parser.add_argument("--count", type=int, required=True, help="Number of samples to generate for this split.")
     parser.add_argument("--splits_json", type=str, default=str(DEFAULT_SPLITS_JSON), help="Path to split json.")
     parser.add_argument("--output_root", type=str, default=str(DEFAULT_OUTPUT_ROOT), help="Output dataset root.")
-    parser.add_argument("--seed", type=int, default=123, help="Random seed for source-path sampling.")
-
-    parser.add_argument("--dmax_min", type=float, default=-0.02, help="Per-image dmax lower bound.")
-    parser.add_argument("--dmax_max", type=float, default=-0.0, help="Per-image dmax upper bound.")
-    parser.add_argument("--theta_min", type=float, default=0.0, help="Per-image theta lower bound (radians).")
-    parser.add_argument("--theta_max", type=float, default=6.283185307179586, help="Per-image theta upper bound (radians).")
-
-    parser.add_argument("--num_steps", type=int, default=16, help="Motion blur integration step count K.")
-    parser.add_argument(
-        "--batchify_steps",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Whether to batchify K sampling steps (default: true).",
-    )
-    parser.add_argument("--mode", type=str, default="bilinear", choices=["nearest", "bilinear", "bicubic"])
-    parser.add_argument("--padding_mode", type=str, default="border", choices=["zeros", "border", "reflection"])
-    parser.add_argument(
-        "--align_corners",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="grid_sample align_corners flag.",
-    )
-
+    parser.add_argument("--seed", type=int, default=123, help="Random seed for source-path and parameter sampling.")
+    parser.add_argument("--global_light_min", type=float, default=0.5, help="Global light lower bound (A_min).")
+    parser.add_argument("--global_light_max", type=float, default=1.0, help="Global light upper bound (A_max).")
+    parser.add_argument("--fog_density_min", type=float, default=0.1, help="Fog density lower bound (beta_min).")
+    parser.add_argument("--fog_density_max", type=float, default=1.0, help="Fog density upper bound (beta_max).")
     parser.add_argument("--device", type=str, default="auto", help="cpu/cuda/cuda:N/auto")
-    parser.add_argument("--progress_interval", type=int, default=128, help="Progress print interval.")
+    parser.add_argument("--progress_interval", type=int, default=256, help="Progress print interval.")
     parser.add_argument("--index_offset", type=int, default=0, help="Starting id offset for output file naming.")
     parser.add_argument(
         "--artifact_suffix",
@@ -337,22 +258,16 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-
-    summary = generate_motion_blur_split_dataset(
+    summary = generate_haze_split_dataset(
         split=str(args.split),
         count=int(args.count),
         splits_json=Path(args.splits_json),
         output_root=Path(args.output_root),
         seed=int(args.seed),
-        dmax_min=float(args.dmax_min),
-        dmax_max=float(args.dmax_max),
-        theta_min=float(args.theta_min),
-        theta_max=float(args.theta_max),
-        num_steps=int(args.num_steps),
-        batchify_steps=bool(args.batchify_steps),
-        mode=str(args.mode),
-        padding_mode=str(args.padding_mode),
-        align_corners=bool(args.align_corners),
+        global_light_min=float(args.global_light_min),
+        global_light_max=float(args.global_light_max),
+        fog_density_min=float(args.fog_density_min),
+        fog_density_max=float(args.fog_density_max),
         device_name=str(args.device),
         progress_interval=int(args.progress_interval),
         index_offset=int(args.index_offset),

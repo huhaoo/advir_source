@@ -5,7 +5,6 @@ import json
 import random
 from pathlib import Path
 
-import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import Tensor
@@ -24,6 +23,7 @@ try:
         _save_rgb_tensor,
         deg,
     )
+    from util.runtime import seed_everything as _seed_everything
 except ModuleNotFoundError:
     from .control_map_interpolator import InterpolationFieldConfig, control_map_interpolator
     from .haze_dataset_builder import (
@@ -38,17 +38,10 @@ except ModuleNotFoundError:
         _save_rgb_tensor,
         deg,
     )
+    from .util.runtime import seed_everything as _seed_everything
 
 
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "tmp_demo" / "random_adv_ots_s1_64_1024"
-
-
-def _seed_everything(seed: int) -> None:
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
 
 
 def _first_order_regularization(low_res_map: Tensor) -> Tensor:

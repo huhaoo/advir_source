@@ -14,62 +14,22 @@ from torch import Tensor
 
 try:
     from control_map_interpolator import InterpolationFieldConfig, control_map_interpolator
+    from util.image_io import ensure_bchw as _ensure_bchw
+    from util.image_io import load_rgb_tensor as _load_rgb_tensor
+    from util.image_io import save_rgb_tensor as _save_rgb_tensor
+    from util.runtime import resolve_runtime_device as _resolve_runtime_device
 except ModuleNotFoundError:
     from .control_map_interpolator import InterpolationFieldConfig, control_map_interpolator
+    from .util.image_io import ensure_bchw as _ensure_bchw
+    from .util.image_io import load_rgb_tensor as _load_rgb_tensor
+    from .util.image_io import save_rgb_tensor as _save_rgb_tensor
+    from .util.runtime import resolve_runtime_device as _resolve_runtime_device
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATASET_ROOT = PROJECT_ROOT / "dataset"
 DEFAULT_TRAIN_MANIFEST = PROJECT_ROOT / "PromptIR" / "data_dir" / "hazy" / "hazy_outside_test.txt"
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "tmp_demo" / "haze_dataset_builder"
 FIXED_GRAD_TARGET_STD = 9.64294260850096e-05
-
-
-def _ensure_bchw(image: Tensor) -> tuple[Tensor, bool]:
-    if not isinstance(image, torch.Tensor):
-        raise ValueError(f"image must be torch.Tensor, got {type(image)!r}")
-    if image.ndim == 3:
-        if image.shape[0] not in {1, 3}:
-            raise ValueError(f"3D image must be (C,H,W) with C in {{1,3}}, got {tuple(image.shape)}")
-        return image.unsqueeze(0), True
-    if image.ndim == 4:
-        return image, False
-    raise ValueError(f"image must be (C,H,W) or (B,C,H,W), got {tuple(image.shape)}")
-
-
-def _load_rgb_tensor(path: Path) -> Tensor:
-    img_np = np.asarray(Image.open(path).convert("RGB"), dtype=np.float32) / 255.0
-    return torch.from_numpy(img_np).permute(2, 0, 1).unsqueeze(0).contiguous()
-
-
-def _resolve_runtime_device(device: str) -> torch.device:
-    if not isinstance(device, str) or device.strip() == "":
-        raise ValueError(f"device must be a non-empty string, got {device!r}")
-
-    device_name = device.strip().lower()
-    if device_name == "auto":
-        return torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    if device_name == "cpu":
-        return torch.device("cpu")
-    if device_name.startswith("cuda"):
-        if not torch.cuda.is_available():
-            raise RuntimeError("CUDA device requested but torch.cuda.is_available() is False")
-        try:
-            resolved = torch.device(device_name)
-        except Exception as exc:
-            raise ValueError(f"invalid CUDA device format: {device}") from exc
-        if resolved.index is not None and resolved.index >= torch.cuda.device_count():
-            raise ValueError(
-                f"requested CUDA index {resolved.index} out of range (device_count={torch.cuda.device_count()})"
-            )
-        return resolved
-    raise ValueError(f"unsupported device: {device!r}. use one of: cpu, cuda, cuda:N, auto")
-
-
-def _save_rgb_tensor(image: Tensor, path: Path) -> None:
-    image_bchw, _ = _ensure_bchw(image)
-    image_np = image_bchw[0].detach().cpu().clamp(0.0, 1.0).permute(1, 2, 0).numpy()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    Image.fromarray((image_np * 255.0 + 0.5).astype(np.uint8), mode="RGB").save(path)
 
 
 def _save_scalar_tensor(tensor: Tensor, path: Path, title: str) -> None:

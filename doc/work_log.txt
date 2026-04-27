@@ -1,6 +1,6 @@
 work_log_rolling
 
-last_update: 2026-04-22
+last_update: 2026-04-26
 workspace_root: /home/huhao/adv_ir
 
 purpose:
@@ -17,35 +17,505 @@ maintenance_rule:
 
 handoff_now:
 - current_focus:
-  - regenerated motion_sim dataset using the trimmed dataset_path manifests (global area rank drop low/high 5%).
+  - adjusted adv50 gaussian airlight/beta launcher to haze_hard-style script layout using reside_ots_sim paired dataset root.
 - status:
-  - implemented and validated on 2026-04-22.
+  - running (started on 2026-04-26).
 - key_behavior:
-  - reran /home/huhao/adv_ir/source/motion_blur_dataset_builder.py with updated
-    /home/huhao/adv_ir/dataset_path/promptir_clear_depth_sets_only.json.
-  - train generation:
-    - 3 shards on cuda:0/1/2 with counts 5462/5461/5461 and merged into train/manifest.json + train/summary.json.
-  - val/test generation:
-    - rebuilt with count=1024 each on cuda:0/1.
-  - final motion_sim summary:
-    - train: count=16384, source_pool_size=15785, sample_with_replacement=true
-    - val: count=1024, source_pool_size=870, sample_with_replacement=true
-    - test: count=1024, source_pool_size=874, sample_with_replacement=true
-  - demo summary:
-    - /home/huhao/adv_ir/tmp_demo/motion_sim_regen_trim5/summary.json
+  - updated haze adversarial random sampler path:
+    - /home/huhao/adv_ir/source/degradation.py
+    - /home/huhao/adv_ir/source/promptir_attack.py
+    - /home/huhao/adv_ir/source/promptir_adv_training.py
+    - /home/huhao/adv_ir/PromptIR/options.py
+  - new configurable haze adversarial args:
+    - `adv_haze_airlight_min`, `adv_haze_airlight_max`, `adv_haze_airlight_jitter`
+    - `adv_haze_beta_mean_min`, `adv_haze_beta_mean_max`, `adv_haze_beta_mean_log_uniform`
+  - added launcher:
+    - /home/huhao/adv_ir/exe/haze/run_train_nafnet_adv50_gaussian_airlight05_10_beta01_08_log.sh
+  - launcher target setting:
+    - airlight in [0.5, 1.0]
+    - beta_mean in [0.1, 0.8], sampled log-uniform
 - latest_demo_output:
-  - /home/huhao/adv_ir/tmp_demo/motion_sim_regen_trim5/summary.json
-- latest_dataset_output:
-  - /home/huhao/adv_ir/dataset/motion_sim/{train,val,test}
+  - /home/huhao/adv_ir/tmp_demo/haze_hard_adv50_gaussian_airlight_script_demo/summary.txt
 - key_docs_synced:
+  - /home/huhao/adv_ir/source/doc/module_document.txt
   - /home/huhao/adv_ir/source/doc/work_log.txt
 
 quick_continue_checklist:
-- run paired loader smoke against refreshed motion_sim:
-  - conda run -n promptir --no-capture-output python /home/huhao/adv_ir/PromptIR/adv_train.py --help | rg "motion_blur_dir|de_type"
-- if strict no-replacement is required for val/test, regenerate with count <= source_pool_size (870/874).
+- new adv50 gaussian launcher with haze random-range override:
+  - `bash /home/huhao/adv_ir/exe/haze/run_train_nafnet_adv50_gaussian_airlight05_10_beta01_08_log.sh`
+- new args in PromptIR options:
+  - `--adv_haze_airlight_min/--adv_haze_airlight_max`
+  - `--adv_haze_beta_mean_min/--adv_haze_beta_mean_max`
+  - `--adv_haze_beta_mean_log_uniform`
+- monitor training:
+  - `tmux attach -t haze_hard_train`
+  - `sed -n '1,220p' /home/huhao/adv_ir/logs/haze_hard_train_20260426_193101.log`
+- stop training:
+  - `tmux kill-session -t haze_hard_train`
+- checkpoint root:
+  - /home/huhao/adv_ir/exp/haze/train_ckpt_nafnet_haze_hard
+- RESIDE-OTS-SIM split dataset is available at:
+  - /home/huhao/adv_ir/dataset/haze/reside_ots_sim/train
+  - /home/huhao/adv_ir/dataset/haze/reside_ots_sim/val
+  - /home/huhao/adv_ir/dataset/haze/reside_ots_sim/test
+- generation script and parameters:
+  - /home/huhao/adv_ir/source/reside_ots_sim_haze_dataset_builder.py
+  - global light range: [0.5, 1.0]
+  - fog density range: [0.1, 1.0]
+  - sampling mode: exp-uniform
+- use /home/huhao/adv_ir/dataset/haze/nh_haze as a paired dataset root with input/target subdirs.
+- mapped global-light metadata is available at /home/huhao/adv_ir/dataset_ours/haze/nh_haze_light_0p9_1/per_image_global_light_0p9_1.csv.
+- materialized mapped dataset is available at /home/huhao/adv_ir/dataset_ours/haze/nh_haze_light_0p9_1 with input/target images and light files.
+- refractive-index proxy datasets are available at /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p4 and /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p4_smooth.
+- these refractive-index proxy datasets now include synthetic_input/*.png generated from target + rho + mapped RGB airlight.
+- sequential stepwise testing datasets are available at:
+  - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_step1_light_up
+  - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_step2_light_up_refractive_down
+  - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_step3_light_up_refractive_down_smooth
+- no-step1 mean0.7 testing datasets are available at:
+  - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p7_no_step1
+  - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p7_no_step1_smooth
+- 8 combo testing datasets are available at:
+  - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_mean0p4_smooth0_lightup0
+  - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_mean0p4_smooth0_lightup1
+  - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_mean0p4_smooth1_lightup0
+  - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_mean0p4_smooth1_lightup1
+  - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_mean0p8_smooth0_lightup0
+  - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_mean0p8_smooth0_lightup1
+  - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_mean0p8_smooth1_lightup0
+  - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_mean0p8_smooth1_lightup1
+- latest NH-HAZE global-light-mapped dataset evaluation on adv50 gaussian ckpt was run with GPU via escalated command because sandboxed CUDA/NVML was unavailable.
+- estimated optical-density maps are proxy maps only; true refractive index needs physical calibration/depth.
 
 recent_sessions:
+
+- date: 2026-04-26
+  title: align adv50 gaussian airlight/beta launcher with haze_hard dataset script style
+  changes:
+  - updated:
+    - /home/huhao/adv_ir/exe/haze/run_train_nafnet_adv50_gaussian_airlight05_10_beta01_08_log.sh
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  - behavior:
+    - launcher now uses `--de_type haze_hard` and env-style defaults, matching `/home/huhao/adv_ir/exe/haze/run_train_nafnet_haze_hard.sh` style.
+    - dataset root is explicitly wired via `--motion_blur_dir "${MOTION_BLUR_DIR:-/home/huhao/adv_ir/dataset/haze/reside_ots_sim}"`.
+    - keeps adv50 gaussian parameters and airlight/beta_mean override flags in script.
+  validations:
+  - script checks passed:
+    - bash -n /home/huhao/adv_ir/exe/haze/run_train_nafnet_adv50_gaussian_airlight05_10_beta01_08_log.sh
+    - bash /home/huhao/adv_ir/exe/haze/run_train_nafnet_adv50_gaussian_airlight05_10_beta01_08_log.sh --help > /home/huhao/adv_ir/tmp_demo/haze_hard_adv50_gaussian_airlight_script_demo/launcher_help.txt
+  - demo summary:
+    - /home/huhao/adv_ir/tmp_demo/haze_hard_adv50_gaussian_airlight_script_demo/summary.txt
+
+- date: 2026-04-26
+  title: rollback haze_hard-source fallback changes in adv haze training path
+  changes:
+  - updated:
+    - /home/huhao/adv_ir/source/promptir_adv_training.py
+    - /home/huhao/adv_ir/PromptIR/options.py
+    - /home/huhao/adv_ir/exe/haze/run_train_nafnet_adv50_gaussian_airlight05_10_beta01_08_log.sh
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  - rollback details:
+    - removed `adv_haze_source_from_motion_blur` CLI option and corresponding training fallback branch.
+    - `haze` adversarial subset restored to native dehaze-source-only behavior.
+    - launcher restored to dehaze baseline style (`--de_type dehaze`) while keeping airlight/beta_mean override flags.
+  validations:
+  - no leftover symbol:
+    - `rg -n "adv_haze_source_from_motion_blur" /home/huhao/adv_ir` (no match)
+  - syntax checks passed:
+    - conda run -n advir --no-capture-output python -m py_compile /home/huhao/adv_ir/source/promptir_adv_training.py /home/huhao/adv_ir/source/promptir_attack.py /home/huhao/adv_ir/source/degradation.py
+    - conda run -n promptir --no-capture-output python -m py_compile /home/huhao/adv_ir/PromptIR/options.py
+    - bash -n /home/huhao/adv_ir/exe/haze/run_train_nafnet_adv50_gaussian_airlight05_10_beta01_08_log.sh
+    - bash /home/huhao/adv_ir/exe/haze/run_train_nafnet_adv50_gaussian_airlight05_10_beta01_08_log.sh --help > /home/huhao/adv_ir/tmp_demo/rollback_haze_round_demo/launcher_help.txt
+
+- date: 2026-04-26
+  title: add haze adversarial random-range controls and adv50 gaussian launcher
+  changes:
+  - updated:
+    - /home/huhao/adv_ir/source/degradation.py
+    - /home/huhao/adv_ir/source/promptir_attack.py
+    - /home/huhao/adv_ir/source/promptir_adv_training.py
+    - /home/huhao/adv_ir/PromptIR/options.py
+  - added launcher:
+    - /home/huhao/adv_ir/exe/haze/run_train_nafnet_adv50_gaussian_airlight05_10_beta01_08_log.sh
+  - updated docs:
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  validations:
+  - syntax checks passed:
+    - conda run -n advir --no-capture-output python -m py_compile /home/huhao/adv_ir/source/degradation.py /home/huhao/adv_ir/source/promptir_attack.py /home/huhao/adv_ir/source/promptir_adv_training.py
+    - conda run -n promptir --no-capture-output python -m py_compile /home/huhao/adv_ir/PromptIR/options.py
+    - bash -n /home/huhao/adv_ir/exe/haze/run_train_nafnet_adv50_gaussian_airlight05_10_beta01_08_log.sh
+  - demo summary:
+    - /home/huhao/adv_ir/tmp_demo/haze_adv_random_range_log_uniform/summary.json
+    - observed range in demo:
+      - airlight: [0.5, 1.0]
+      - beta_mean: [0.1001, 0.7985] (log-uniform enabled)
+
+- date: 2026-04-26
+  title: add de_type alias for motion_blur
+  changes:
+  - updated /home/huhao/adv_ir/PromptIR/utils/dataset_utils.py:
+    - added alias mapping `haze_hard -> 5` in `de_dict`
+    - motion-blur enable check now recognizes `haze_hard`
+  - updated docs:
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  validations:
+  - py_compile passed for dataset loader module
+  - PromptTrainDataset init with `--de_type haze_hard` on val split succeeded and loaded 1024 pairs
+
+- date: 2026-04-26
+  title: launch NAFNet haze_hard training on RESIDE-OTS-SIM
+  changes:
+  - added /home/huhao/adv_ir/exe/haze/run_train_nafnet_haze_hard.sh
+  - started background training in tmux session `haze_hard_train`:
+    - script: /home/huhao/adv_ir/exe/haze/run_train_nafnet_haze_hard.sh
+    - log: /home/huhao/adv_ir/logs/haze_hard_train_20260426_193101.log
+    - ckpt_dir: /home/huhao/adv_ir/exp/haze/train_ckpt_nafnet_haze_hard
+  - updated docs:
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  validations:
+  - launcher checks passed:
+    - bash -n /home/huhao/adv_ir/exe/haze/run_train_nafnet_haze_hard.sh
+    - bash /home/huhao/adv_ir/exe/haze/run_train_nafnet_haze_hard.sh --help > /home/huhao/adv_ir/tmp_demo/haze_hard_train_launcher_demo/help.txt
+  - startup checks passed:
+    - tmux session alive: `haze_hard_train`
+    - log shows wandb init + DDP init + Epoch 0 progress
+    - options include:
+      - de_type=['motion_blur']
+      - motion_blur_dir=/home/huhao/adv_ir/dataset/haze/reside_ots_sim
+      - wandb_run_name=haze_hard
+
+- date: 2026-04-26
+  title: generate RESIDE-OTS-SIM split haze dataset with exp-uniform sampling
+  changes:
+  - added /home/huhao/adv_ir/source/reside_ots_sim_haze_dataset_builder.py
+  - generated:
+    - /home/huhao/adv_ir/dataset/haze/reside_ots_sim/train (16384)
+    - /home/huhao/adv_ir/dataset/haze/reside_ots_sim/val (1024)
+    - /home/huhao/adv_ir/dataset/haze/reside_ots_sim/test (1024)
+  - updated docs:
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/dataset_path.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  validations:
+  - syntax check passed:
+    - conda run -n advir --no-capture-output python -m py_compile /home/huhao/adv_ir/source/reside_ots_sim_haze_dataset_builder.py
+  - generation passed:
+    - file counts match requested split sizes for input/target.
+    - manifest record counts match generated png counts.
+    - sampled ranges satisfy:
+      - global_light in [0.5, 1.0]
+      - fog_density in [0.1, 1.0]
+  - demo summary:
+    - /home/huhao/adv_ir/tmp_demo/reside_ots_sim_haze_dataset_builder_demo/train/summary.json
+
+- date: 2026-04-25
+  title: build NH-HAZE 8-combo datasets (mean/smooth/white-shift lightup)
+  changes:
+  - added /home/huhao/adv_ir/source/build_nh_haze_8combo_datasets.py
+  - generated:
+    - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_mean0p4_smooth0_lightup0
+    - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_mean0p4_smooth0_lightup1
+    - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_mean0p4_smooth1_lightup0
+    - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_mean0p4_smooth1_lightup1
+    - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_mean0p8_smooth0_lightup0
+    - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_mean0p8_smooth0_lightup1
+    - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_mean0p8_smooth1_lightup0
+    - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_mean0p8_smooth1_lightup1
+  - updated docs:
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/dataset_path.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  validations:
+  - generation passed:
+    - dataset count = 8
+    - each dataset input/target/refractive_index_npy count = 55
+  - key metrics:
+    - mean0p4 group rho_mean ~= 0.4000 for smooth0/smooth1
+    - mean0p8 smooth0 rho_mean ~= 0.7778 (bounded mapping under clipping)
+    - mean0p8 smooth1 rho_mean ~= 0.8000
+    - lightup=1 increases input_mean by final white-shift (alpha=0.12)
+  - demo summary:
+    - /home/huhao/adv_ir/tmp_demo/nh_haze_8combo_build/summary.json
+
+- date: 2026-04-25
+  title: build no-step1 mean0.7 testing datasets
+  changes:
+  - added /home/huhao/adv_ir/source/build_nh_haze_refractive_mean0p7_test_datasets.py
+  - generated:
+    - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p7_no_step1
+    - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p7_no_step1_smooth
+  - updated docs:
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/dataset_path.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  validations:
+  - syntax check passed:
+    - conda run -n advir --no-capture-output python -m py_compile source/build_nh_haze_refractive_mean0p7_test_datasets.py
+  - dataset integrity:
+    - input/target/input_original/refractive_index_npy/refractive_index/airlight_rgb_npy counts = 55 for both datasets
+    - manifest.csv rows = 55 for both datasets
+  - metrics:
+    - mapped rho_mean range = [0.6182, 0.7000], summary rho_mean = 0.6969
+    - smooth rho_mean range = [0.7000, 0.7000], summary rho_mean = 0.7000
+    - mapped_vs_smooth input mean abs diff = 0.0213
+  - demo summary:
+    - /home/huhao/adv_ir/tmp_demo/nh_haze_refractive_mean0p7_no_step1_build/summary.json
+
+- date: 2026-04-25
+  title: build stepwise NH-HAZE testing datasets
+  changes:
+  - added /home/huhao/adv_ir/source/build_nh_haze_stepwise_test_datasets.py
+  - generated three step roots:
+    - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_step1_light_up
+    - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_step2_light_up_refractive_down
+    - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_step3_light_up_refractive_down_smooth
+  - each step contains ready-to-test `input/target` pairs plus refractive/airlight artifacts.
+  - updated docs:
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/dataset_path.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  validations:
+  - syntax check passed:
+    - conda run -n advir --no-capture-output python -m py_compile source/build_nh_haze_stepwise_test_datasets.py
+  - dataset integrity:
+    - input/target/input_original/refractive_index_npy/refractive_index/airlight_rgb_npy counts = 55 for all 3 steps
+    - manifest.csv rows = 55 for all 3 steps
+  - stage metrics:
+    - step1 input_mean=0.6663, rho_mean=1.0016, rho_var_mean=0.8373
+    - step2 input_mean=0.5625, rho_mean=0.4000, rho_var_mean=0.1129
+    - step3 input_mean=0.5661, rho_mean=0.4000, rho_var_mean=0.0817
+    - mean abs diff: step1_vs_step2=0.1049, step2_vs_step3=0.0268
+  - demo summary:
+    - /home/huhao/adv_ir/tmp_demo/nh_haze_stepwise_build/summary.json
+
+- date: 2026-04-25
+  title: synthesize inputs for refractive proxy datasets
+  changes:
+  - added /home/huhao/adv_ir/source/synthesize_nh_haze_inputs_from_refractive.py
+  - generated:
+    - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p4/synthetic_input/*.png
+    - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p4_smooth/synthetic_input/*.png
+  - wrote synthesis manifests and summaries in both dataset roots.
+  - updated docs:
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/dataset_path.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  validations:
+  - syntax check passed:
+    - conda run -n advir --no-capture-output python -m py_compile source/synthesize_nh_haze_inputs_from_refractive.py
+  - generation passed:
+    - synthetic_input count = 55 for both datasets
+    - output image shape = 1200x1600x3
+    - mean abs diff vs original input = 0.0950 for mean0p4
+    - mean abs diff vs original input = 0.1066 for mean0p4_smooth
+  - demo summary:
+    - /home/huhao/adv_ir/tmp_demo/nh_haze_synthetic_inputs_from_refractive/summary.json
+
+- date: 2026-04-25
+  title: build mean-0.4 refractive proxy datasets
+  changes:
+  - added /home/huhao/adv_ir/source/build_nh_haze_refractive_mean_datasets.py
+  - generated /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p4
+  - generated /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p4_smooth
+  - updated docs:
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/dataset_path.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  validations:
+  - syntax check passed:
+    - conda run -n advir --no-capture-output python -m py_compile source/build_nh_haze_refractive_mean_datasets.py
+  - generation passed:
+    - each dataset input/target/refractive_index/refractive_index_npy/preview counts = 55
+    - mapped mean range = [0.39999969, 0.40000033]
+    - smoothed mean range = [0.39999981, 0.40000037]
+    - mapped per-image variance mean = 0.1129
+    - smoothed per-image variance mean = 0.0817
+  - demo summary:
+    - /home/huhao/adv_ir/tmp_demo/nh_haze_refractive_mean0p4/summary.json
+
+- date: 2026-04-25
+  title: evaluate NAFNet adv50 gaussian ckpt on mapped NH-HAZE dataset
+  changes:
+  - reset /home/huhao/adv_ir/tmp_demo before evaluation.
+  - ran /home/huhao/adv_ir/source/promptir_paired_dataset_test.py on:
+    - checkpoint: /home/huhao/adv_ir/exp/haze/train_ckpt_nafnet_adv50_gaussian/epoch=128-step=131073.ckpt
+    - dataset_root: /home/huhao/adv_ir/dataset_ours/haze/nh_haze_light_0p9_1
+  - outputs:
+    - /home/huhao/adv_ir/tmp_demo/nh_haze_light_0p9_1_nafnet_adv50_gaussian_eval/metrics_per_sample.csv
+    - /home/huhao/adv_ir/tmp_demo/nh_haze_light_0p9_1_nafnet_adv50_gaussian_eval/metrics_summary.json
+    - /home/huhao/adv_ir/tmp_demo/nh_haze_light_0p9_1_nafnet_adv50_gaussian_eval/skipped_samples.json
+    - /home/huhao/adv_ir/tmp_demo/nh_haze_light_0p9_1_nafnet_adv50_gaussian_eval/restored/*.png
+  validations:
+  - CUDA was unavailable inside sandbox, then available in escalated execution:
+    - torch cuda_available = True
+    - device_count = 3
+  - evaluation passed:
+    - device = cuda
+    - samples = 55
+    - skipped = 0
+    - tile_size = 512
+    - tile_overlap = 64
+    - restored png count = 55
+    - PSNR mean = 12.3602
+    - SSIM mean = 0.4882
+
+- date: 2026-04-25
+  title: map NH-HAZE global light to [0.9, 1.0]
+  changes:
+  - updated /home/huhao/adv_ir/source/map_nh_haze_global_light.py
+    - materializes input/target images into the derived dataset.
+    - writes mapped light as per-sample json, npy, and same-size constant png maps.
+  - generated /home/huhao/adv_ir/dataset_ours/haze/nh_haze_light_0p9_1:
+    - input/*.png
+    - target/*.png
+    - light_rgb/*.json
+    - light_gray/*.json
+    - light_rgb_npy/*.npy
+    - light_gray_npy/*.npy
+    - light_rgb_map/*.png
+    - light_gray_map/*.png
+    - per_image_global_light_0p9_1.csv
+    - manifest.json
+    - summary.json
+  - updated docs:
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/dataset_path.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  validations:
+  - syntax check passed:
+    - conda run -n advir --no-capture-output python -m py_compile source/map_nh_haze_global_light.py
+  - generation passed:
+    - processed rows = 55
+    - input png count = 55
+    - target png count = 55
+    - light_rgb/light_gray json counts = 55 each
+    - light_rgb_npy/light_gray_npy counts = 55 each
+    - light_rgb_map/light_gray_map png counts = 55 each
+    - mapped_light_intensity_0p9_1 range = [0.9, 1.0]
+    - mapped_light_r/g/b ranges = [0.9, 1.0]
+  - demo summary:
+    - /home/huhao/adv_ir/tmp_demo/nh_haze_light_0p9_1/summary.json
+
+- date: 2026-04-25
+  title: estimate NH-HAZE atmospheric light and transmission proxy maps
+  changes:
+  - added /home/huhao/adv_ir/source/estimate_haze_physics_maps.py
+  - generated /home/huhao/adv_ir/dataset/haze/nh_haze/estimates:
+    - per_image_estimates.csv
+    - summary.json
+    - transmission/*.png
+    - optical_density/*.png
+    - preview/*.png
+  - updated docs:
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/dataset_path.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  validations:
+  - syntax check passed:
+    - conda run -n advir --no-capture-output python -m py_compile source/estimate_haze_physics_maps.py
+  - generation passed:
+    - processed 55/55 images
+    - transmission png count = 55
+    - optical_density png count = 55
+    - preview png count = 55
+  - estimate summary:
+    - atmospheric_light_intensity_mean mean = 0.7650
+    - atmospheric_light_intensity_max mean = 0.8143
+    - transmission_mean mean = 0.5173
+    - optical_density_mean mean = 1.0016
+  - demo summary:
+    - /home/huhao/adv_ir/tmp_demo/nh_haze_physics_estimates/summary.json
+
+- date: 2026-04-25
+  title: organize NH-HAZE zip into dataset/haze
+  changes:
+  - extracted /home/huhao/adv_ir/dataset_zip/haze/NH-HAZE.zip into:
+    - /home/huhao/adv_ir/dataset/haze/nh_haze/raw/NH-HAZE
+  - created paired hardlink layout:
+    - /home/huhao/adv_ir/dataset/haze/nh_haze/input/*.png
+    - /home/huhao/adv_ir/dataset/haze/nh_haze/target/*.png
+  - wrote:
+    - /home/huhao/adv_ir/dataset/haze/nh_haze/manifest.json
+    - /home/huhao/adv_ir/dataset/haze/nh_haze/meta/summary.json
+  - updated docs:
+    - /home/huhao/adv_ir/source/doc/dataset_path.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  validations:
+  - counts passed:
+    - input png count = 55
+    - target png count = 55
+    - raw png count = 110
+    - manifest record count = 55
+  - pair integrity passed:
+    - missing_gt_ids = []
+    - image size mismatch count = 0
+    - all pairs are 1200x1600
+  - demo summary:
+    - /home/huhao/adv_ir/tmp_demo/nh_haze_dataset_organize/summary.json
+
+- date: 2026-04-24
+  title: move helpers under source/util and remove demo leftovers
+  changes:
+  - moved helper modules:
+    - /home/huhao/adv_ir/source/image_io.py -> /home/huhao/adv_ir/source/util/image_io.py
+    - /home/huhao/adv_ir/source/runtime_utils.py -> /home/huhao/adv_ir/source/util/runtime.py
+  - added /home/huhao/adv_ir/source/util/__init__.py
+  - updated callers to import from util.image_io and util.runtime.
+  - removed pure forwarding wrappers from /home/huhao/adv_ir/source/promptir_attack.py:
+    - _save_rgb_tensor now comes from util.image_io via import alias.
+    - _tensor_to_uint8_hwc wrapper was removed.
+  - removed old promptir_attack demo leftovers:
+    - DEFAULT_CKPT
+    - _prepare_output_dir
+    - _seed_everything wrapper
+  - updated docs:
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  validations:
+  - syntax check passed:
+    - conda run -n advir --no-capture-output python -m py_compile source/util/__init__.py source/util/image_io.py source/util/runtime.py source/haze_dataset_builder.py source/motion_blur_dataset_builder.py source/random_adv_haze_dataset_builder.py source/promptir_attack.py source/promptir_adv_training.py source/promptir_paired_dataset_test.py tests/test_shared_utils.py
+  - tests passed:
+    - conda run -n advir --no-capture-output pytest -q tests/test_shared_utils.py tests/test_degradations.py tests/test_promptir_attack_motion_blur.py
+    - result: 19 passed
+  - import smoke passed:
+    - conda run -n advir --no-capture-output python -c 'import sys; sys.path.insert(0, "source"); import util.image_io, util.runtime, haze_dataset_builder, motion_blur_dataset_builder, random_adv_haze_dataset_builder, promptir_attack; print("imports ok")'
+  - smoke demo passed:
+    - /home/huhao/adv_ir/tmp_demo/util_refactor_smoke/summary.json
+
+- date: 2026-04-24
+  title: low-risk shared helper simplification
+  changes:
+  - added /home/huhao/adv_ir/source/util/image_io.py:
+    - ensure_bchw
+    - load_rgb_tensor
+    - tensor_to_uint8_hwc
+    - save_rgb_tensor
+  - added /home/huhao/adv_ir/source/util/runtime.py:
+    - seed_everything
+    - resolve_runtime_device
+  - updated callers:
+    - /home/huhao/adv_ir/source/haze_dataset_builder.py
+    - /home/huhao/adv_ir/source/motion_blur_dataset_builder.py
+    - /home/huhao/adv_ir/source/random_adv_haze_dataset_builder.py
+    - /home/huhao/adv_ir/source/promptir_attack.py
+    - /home/huhao/adv_ir/source/promptir_adv_training.py
+    - /home/huhao/adv_ir/source/promptir_paired_dataset_test.py
+  - added /home/huhao/adv_ir/tests/test_shared_utils.py
+  - updated docs:
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  validations:
+  - syntax check passed:
+    - conda run -n advir --no-capture-output python -m py_compile source/util/image_io.py source/util/runtime.py source/haze_dataset_builder.py source/motion_blur_dataset_builder.py source/random_adv_haze_dataset_builder.py source/promptir_attack.py source/promptir_adv_training.py source/promptir_paired_dataset_test.py tests/test_shared_utils.py
+  - tests passed:
+    - conda run -n advir --no-capture-output pytest -q tests/test_shared_utils.py tests/test_degradations.py tests/test_promptir_attack_motion_blur.py
+    - result: 19 passed
+  - smoke demo passed:
+    - /home/huhao/adv_ir/tmp_demo/low_risk_refactor_smoke/summary.json
 
 - date: 2026-04-22
   title: regenerate motion_sim from trimmed dataset_path manifests

@@ -24,6 +24,7 @@ if str(PROMPTIR_ROOT) not in sys.path:
 
 from utils.image_utils import crop_img, random_augmentation  # noqa: E402
 
+from util.image_io import tensor_to_uint8_hwc as _tensor_to_uint8_hwc  # noqa: E402
 from promptir_attack import (  # noqa: E402
     _load_distance_from_mat,
     _load_image_rgb,
@@ -92,6 +93,12 @@ class promptir_adv_mix_dataset(Dataset):
         else:
             self.adv_motion_dmax = float(adv_motion_dmax_raw)
         self.adv_motion_dlambda = float(getattr(args, "adv_motion_dlambda", 0.0))
+        self.adv_haze_airlight_min = float(getattr(args, "adv_haze_airlight_min", 0.85))
+        self.adv_haze_airlight_max = float(getattr(args, "adv_haze_airlight_max", 1.0))
+        self.adv_haze_airlight_jitter = float(getattr(args, "adv_haze_airlight_jitter", 0.02))
+        self.adv_haze_beta_mean_min = float(getattr(args, "adv_haze_beta_mean_min", 0.1))
+        self.adv_haze_beta_mean_max = float(getattr(args, "adv_haze_beta_mean_max", 0.5))
+        self.adv_haze_beta_mean_log_uniform = bool(getattr(args, "adv_haze_beta_mean_log_uniform", False))
         if self.adv_gaussian_radius <= 0:
             raise ValueError(f"adv_gaussian_radius must be > 0, got {self.adv_gaussian_radius}")
         if self.adv_gaussian_sigma <= 0:
@@ -114,6 +121,23 @@ class promptir_adv_mix_dataset(Dataset):
             raise ValueError(f"adv_motion_num_steps must be > 0, got {self.adv_motion_num_steps}")
         if self.adv_motion_dlambda < 0:
             raise ValueError(f"adv_motion_dlambda must be >= 0, got {self.adv_motion_dlambda}")
+        if self.adv_haze_airlight_min > self.adv_haze_airlight_max:
+            raise ValueError(
+                "adv_haze_airlight_min must be <= adv_haze_airlight_max, "
+                f"got {(self.adv_haze_airlight_min, self.adv_haze_airlight_max)}"
+            )
+        if self.adv_haze_airlight_jitter < 0:
+            raise ValueError(f"adv_haze_airlight_jitter must be >= 0, got {self.adv_haze_airlight_jitter}")
+        if self.adv_haze_beta_mean_min > self.adv_haze_beta_mean_max:
+            raise ValueError(
+                "adv_haze_beta_mean_min must be <= adv_haze_beta_mean_max, "
+                f"got {(self.adv_haze_beta_mean_min, self.adv_haze_beta_mean_max)}"
+            )
+        if self.adv_haze_beta_mean_log_uniform and self.adv_haze_beta_mean_min <= 0:
+            raise ValueError(
+                "adv_haze_beta_mean_min must be > 0 when adv_haze_beta_mean_log_uniform is enabled, "
+                f"got {self.adv_haze_beta_mean_min}"
+            )
 
         self.base_len = len(self.base_dataset)
         self.adv_len = self._compute_adv_len()
@@ -345,19 +369,13 @@ class promptir_adv_mix_dataset(Dataset):
         return None
 
     def _tensor_to_uint8_hwc(self, image: torch.Tensor) -> np.ndarray:
-        if image.ndim == 4:
-            image = image[0]
-        if image.ndim != 3:
+        if image.ndim not in {3, 4}:
             raise ValueError(f"expected image tensor with shape (C,H,W), got {tuple(image.shape)}")
-        image = image.detach().cpu().clamp(0.0, 1.0).permute(1, 2, 0).numpy()
-        return (image * 255.0 + 0.5).astype(np.uint8)
+        return _tensor_to_uint8_hwc(image)
 
     def _save_rgb_np(self, image: np.ndarray, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         Image.fromarray(image, mode="RGB").save(path)
-
-    def _save_rgb_tensor(self, image: torch.Tensor, path: Path) -> None:
-        self._save_rgb_np(self._tensor_to_uint8_hwc(image), path)
 
     def _save_density_np_with_value_bar(self, density_map: np.ndarray, path: Path) -> None:
         if not isinstance(density_map, np.ndarray):
@@ -660,6 +678,8 @@ class promptir_adv_mix_dataset(Dataset):
                 de_id_value: int
 
                 if attack_subset == "haze":
+                    if len(self.haze_source_indices) <= 0:
+                        continue
                     src_idx = random.choice(self.haze_source_indices)
                     sample = self.base_dataset.sample_ids[src_idx]
 
@@ -691,6 +711,12 @@ class promptir_adv_mix_dataset(Dataset):
                         gaussian_offset_max=self.adv_gaussian_offset_max,
                         gaussian_offset_lambda_first_order=self.adv_gaussian_offset_lambda_first_order,
                         gaussian_offset_lambda_second_order=self.adv_gaussian_offset_lambda_second_order,
+                        airlight_min=self.adv_haze_airlight_min,
+                        airlight_max=self.adv_haze_airlight_max,
+                        airlight_jitter=self.adv_haze_airlight_jitter,
+                        beta_mean_min=self.adv_haze_beta_mean_min,
+                        beta_mean_max=self.adv_haze_beta_mean_max,
+                        beta_mean_log_uniform=self.adv_haze_beta_mean_log_uniform,
                     )
                     result = run_single_image_adversarial_degradation_search(
                         image=image,

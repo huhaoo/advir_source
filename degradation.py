@@ -283,6 +283,12 @@ def random_haze_degradation_config_from_image(
     gaussian_offset_max: float = 0.5,
     gaussian_offset_lambda_first_order: float = 5e-2,
     gaussian_offset_lambda_second_order: float = 2e-1,
+    airlight_min: float = 0.85,
+    airlight_max: float = 1.0,
+    airlight_jitter: float = 0.02,
+    beta_mean_min: float = 0.1,
+    beta_mean_max: float = 0.5,
+    beta_mean_log_uniform: bool = False,
 ) -> HazeDegradationConfig:
     """Sample one random haze degradation config from an input image."""
     _, h, w = _extract_chw_from_image(image)
@@ -314,15 +320,51 @@ def random_haze_degradation_config_from_image(
             "gaussian_offset_lambda_second_order must be numeric, "
             f"got {type(gaussian_offset_lambda_second_order)!r}"
         )
+    if not isinstance(airlight_min, (int, float)):
+        raise ValueError(f"airlight_min must be numeric, got {type(airlight_min)!r}")
+    if not isinstance(airlight_max, (int, float)):
+        raise ValueError(f"airlight_max must be numeric, got {type(airlight_max)!r}")
+    if float(airlight_min) > float(airlight_max):
+        raise ValueError(f"airlight_min must be <= airlight_max, got {(airlight_min, airlight_max)}")
+    if not isinstance(airlight_jitter, (int, float)) or float(airlight_jitter) < 0:
+        raise ValueError(f"airlight_jitter must be numeric and >= 0, got {airlight_jitter}")
+    if not isinstance(beta_mean_min, (int, float)):
+        raise ValueError(f"beta_mean_min must be numeric, got {type(beta_mean_min)!r}")
+    if not isinstance(beta_mean_max, (int, float)):
+        raise ValueError(f"beta_mean_max must be numeric, got {type(beta_mean_max)!r}")
+    if float(beta_mean_min) > float(beta_mean_max):
+        raise ValueError(f"beta_mean_min must be <= beta_mean_max, got {(beta_mean_min, beta_mean_max)}")
+    if not isinstance(beta_mean_log_uniform, bool):
+        raise ValueError(f"beta_mean_log_uniform must be bool, got {type(beta_mean_log_uniform)!r}")
+    if bool(beta_mean_log_uniform) and float(beta_mean_min) <= 0:
+        raise ValueError(
+            "beta_mean_min must be > 0 when beta_mean_log_uniform is enabled, "
+            f"got {beta_mean_min}"
+        )
 
-    airlight_base = 0.85 + 0.15 * float(torch.rand(1).item())
+    airlight_min_f = float(airlight_min)
+    airlight_max_f = float(airlight_max)
+    airlight_jitter_f = float(airlight_jitter)
+    if airlight_max_f == airlight_min_f:
+        airlight_base = airlight_min_f
+    else:
+        airlight_base = airlight_min_f + (airlight_max_f - airlight_min_f) * float(torch.rand(1).item())
     airlight = []
     for _ in range(3):
-        jitter = (float(torch.rand(1).item()) * 2.0 - 1.0) * 0.02
-        airlight.append(min(max(airlight_base + jitter, 0.85), 1.0))
+        jitter = (float(torch.rand(1).item()) * 2.0 - 1.0) * airlight_jitter_f
+        airlight.append(min(max(airlight_base + jitter, airlight_min_f), airlight_max_f))
     airlight_tuple = (float(airlight[0]), float(airlight[1]), float(airlight[2]))
 
-    beta_mean = 0.1 + 0.4 * float(torch.rand(1).item())
+    beta_mean_min_f = float(beta_mean_min)
+    beta_mean_max_f = float(beta_mean_max)
+    if beta_mean_max_f == beta_mean_min_f:
+        beta_mean = beta_mean_min_f
+    elif bool(beta_mean_log_uniform):
+        log_lo = math.log(beta_mean_min_f)
+        log_hi = math.log(beta_mean_max_f)
+        beta_mean = float(math.exp(log_lo + (log_hi - log_lo) * float(torch.rand(1).item())))
+    else:
+        beta_mean = beta_mean_min_f + (beta_mean_max_f - beta_mean_min_f) * float(torch.rand(1).item())
     beta_std = beta_mean * (0.05 + 0.25 * float(torch.rand(1).item()))
 
     haze_lh, haze_lw = max(4, min(16, h)), max(4, min(16, w))

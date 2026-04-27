@@ -1,15 +1,11 @@
 from __future__ import annotations
 
 import json
-import random
-import shutil
 import sys
 from pathlib import Path
 from typing import Any
 
 import h5py
-import numpy as np
-from PIL import Image
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
@@ -20,38 +16,19 @@ from degradation import (
     random_haze_degradation_config_from_image,
     random_motion_blur_degradation_config_from_image,
 )
+from util.image_io import load_rgb_tensor as _load_rgb_tensor
+from util.image_io import save_rgb_tensor as _save_rgb_tensor
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PROMPTIR_ROOT = PROJECT_ROOT / "PromptIR"
-DEFAULT_CKPT = PROMPTIR_ROOT / "train_ckpt_8192" / "epoch=31-step=57344.ckpt"
 
 if str(PROMPTIR_ROOT) not in sys.path:
     sys.path.insert(0, str(PROMPTIR_ROOT))
 
 
-def _seed_everything(seed: int) -> None:
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-
-
-def _prepare_output_dir(subdir: str = "promptir_attack") -> Path:
-    output_root = PROJECT_ROOT / "tmp_demo"
-    if output_root.exists():
-        shutil.rmtree(output_root)
-    output_dir = output_root / subdir
-    output_dir.mkdir(parents=True, exist_ok=True)
-    return output_dir
-
-
 def _load_image_rgb(image_path: Path) -> Tensor:
-    image = Image.open(image_path).convert("RGB")
-    img_np = np.array(image).astype(np.float32) / 255.0
-    tensor = torch.from_numpy(img_np).permute(2, 0, 1).unsqueeze(0).contiguous()
-    return tensor.clamp(0.0, 1.0)
+    return _load_rgb_tensor(image_path).clamp(0.0, 1.0)
 
 
 def _load_distance_from_mat(depth_path: Path, image_hw: tuple[int, int]) -> tuple[Tensor, dict[str, Any]]:
@@ -185,6 +162,12 @@ def build_haze_controller_from_image(
     gaussian_offset_max: float = 0.5,
     gaussian_offset_lambda_first_order: float = 5e-2,
     gaussian_offset_lambda_second_order: float = 2e-1,
+    airlight_min: float = 0.85,
+    airlight_max: float = 1.0,
+    airlight_jitter: float = 0.02,
+    beta_mean_min: float = 0.1,
+    beta_mean_max: float = 0.5,
+    beta_mean_log_uniform: bool = False,
 ) -> haze_degradation:
     haze_cfg = random_haze_degradation_config_from_image(
         image,
@@ -196,6 +179,12 @@ def build_haze_controller_from_image(
         gaussian_offset_max=gaussian_offset_max,
         gaussian_offset_lambda_first_order=gaussian_offset_lambda_first_order,
         gaussian_offset_lambda_second_order=gaussian_offset_lambda_second_order,
+        airlight_min=airlight_min,
+        airlight_max=airlight_max,
+        airlight_jitter=airlight_jitter,
+        beta_mean_min=beta_mean_min,
+        beta_mean_max=beta_mean_max,
+        beta_mean_log_uniform=beta_mean_log_uniform,
     )
     if beta_mean is not None:
         haze_cfg.beta_mean = float(beta_mean)
@@ -235,18 +224,6 @@ def build_motion_blur_controller_from_image(
         gaussian_offset_lambda_second_order=float(gaussian_offset_lambda_second_order),
     )
     return motion_blur_degradation(motion_cfg)
-
-
-def _tensor_to_uint8_hwc(image: Tensor) -> np.ndarray:
-    if image.ndim == 4:
-        image = image[0]
-    image_np = image.detach().cpu().clamp(0.0, 1.0).permute(1, 2, 0).numpy()
-    return (image_np * 255.0 + 0.5).astype(np.uint8)
-
-
-def _save_rgb_tensor(image: Tensor, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    Image.fromarray(_tensor_to_uint8_hwc(image), mode="RGB").save(path)
 
 
 def run_single_image_adversarial_degradation_search(

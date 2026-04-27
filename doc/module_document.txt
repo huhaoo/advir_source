@@ -1,6 +1,6 @@
 module_document_compact
 
-last_update: 2026-04-22
+last_update: 2026-04-26
 workspace_root: /home/huhao/adv_ir
 
 purpose:
@@ -16,6 +16,22 @@ entry_template:
 - outputs
 
 entries:
+
+### util.image_io
+module_name: util.image_io
+location: /home/huhao/adv_ir/source/util/image_io.py
+kind: module
+summary: shared RGB tensor image I/O helpers and tensor-to-uint8 conversion used by dataset builders, attacks, and paired evaluation.
+run: imported by source scripts
+outputs: runtime tensors and image files
+
+### util.runtime
+module_name: util.runtime
+location: /home/huhao/adv_ir/source/util/runtime.py
+kind: module
+summary: shared deterministic seeding and runtime device resolution helpers.
+run: imported by source scripts
+outputs: configured random seeds and torch.device values
 
 ### control_map
 module_name: control_map
@@ -117,6 +133,12 @@ notes:
   - adv_motion_num_steps (default 16)
   - adv_motion_dmax (default -0.02)
   - adv_motion_dlambda (default 0.0)
+- optional haze adversarial random-range args (read via getattr):
+  - these are exposed in /home/huhao/adv_ir/PromptIR/options.py
+  - adv_haze_airlight_min / adv_haze_airlight_max (default 0.85 / 1.0)
+  - adv_haze_airlight_jitter (default 0.02)
+  - adv_haze_beta_mean_min / adv_haze_beta_mean_max (default 0.1 / 0.5)
+  - adv_haze_beta_mean_log_uniform (default false; when true uses log-uniform sampling for beta_mean)
 
 ### promptir_static_adv_training
 module_name: promptir_static_adv_training
@@ -168,6 +190,149 @@ summary: one-command wrapper for haze_dataset_builder.py with stable defaults, -
 run: bash /home/huhao/adv_ir/haze_dataset_builder.sh --device auto
 outputs: same as selected --output_root of haze_dataset_builder.py
 
+### estimate_haze_physics_maps
+module_name: estimate_haze_physics_maps
+location: /home/huhao/adv_ir/source/estimate_haze_physics_maps.py
+kind: script
+summary: estimate per-image global atmospheric light and per-pixel transmission/optical-density proxy maps for paired haze datasets.
+run:
+- conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/estimate_haze_physics_maps.py --dataset_root /home/huhao/adv_ir/dataset/haze/nh_haze --output_root /home/huhao/adv_ir/dataset/haze/nh_haze/estimates
+outputs:
+- /home/huhao/adv_ir/dataset/haze/nh_haze/estimates/per_image_estimates.csv
+- /home/huhao/adv_ir/dataset/haze/nh_haze/estimates/summary.json
+- /home/huhao/adv_ir/dataset/haze/nh_haze/estimates/transmission/*.png
+- /home/huhao/adv_ir/dataset/haze/nh_haze/estimates/optical_density/*.png
+- /home/huhao/adv_ir/dataset/haze/nh_haze/estimates/preview/*.png
+notes:
+- optical_density = -log(transmission) is a haze-strength proxy, not a physically calibrated refractive index.
+
+### map_nh_haze_global_light
+module_name: map_nh_haze_global_light
+location: /home/huhao/adv_ir/source/map_nh_haze_global_light.py
+kind: script
+summary: derive per-image NH-HAZE global atmospheric light values mapped into a target range, defaulting to [0.9, 1.0].
+run:
+- conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/map_nh_haze_global_light.py --input_csv /home/huhao/adv_ir/dataset/haze/nh_haze/estimates/per_image_estimates.csv --output_root /home/huhao/adv_ir/dataset_ours/haze/nh_haze_light_0p9_1
+outputs:
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_light_0p9_1/input/*.png
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_light_0p9_1/target/*.png
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_light_0p9_1/light_rgb/*.json
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_light_0p9_1/light_gray/*.json
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_light_0p9_1/light_rgb_npy/*.npy
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_light_0p9_1/light_gray_npy/*.npy
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_light_0p9_1/light_rgb_map/*.png
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_light_0p9_1/light_gray_map/*.png
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_light_0p9_1/per_image_global_light_0p9_1.csv
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_light_0p9_1/manifest.json
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_light_0p9_1/summary.json
+notes:
+- `mapped_light_intensity_0p9_1` is min-max mapped from estimated atmospheric_light_intensity_mean.
+- `mapped_light_r/g/b` are per-channel min-max mapped values in the same range.
+- `input` and `target` are materialized into the dataset root; the script uses hardlinks when possible and falls back to copies.
+
+### build_nh_haze_refractive_mean_datasets
+module_name: build_nh_haze_refractive_mean_datasets
+location: /home/huhao/adv_ir/source/build_nh_haze_refractive_mean_datasets.py
+kind: script
+summary: build two NH-HAZE optical-density proxy datasets: one mean-mapped to 0.4 and one Gaussian-smoothed while preserving mean 0.4.
+run:
+- conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/build_nh_haze_refractive_mean_datasets.py --input_csv /home/huhao/adv_ir/dataset/haze/nh_haze/estimates/per_image_estimates.csv --mapped_output_root /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p4 --smooth_output_root /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p4_smooth --target_mean 0.4 --smooth_radius 16.0
+outputs:
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p4/input/*.png
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p4/target/*.png
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p4/refractive_index/*.png
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p4/refractive_index_npy/*.npy
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p4/summary.json
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p4_smooth/input/*.png
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p4_smooth/target/*.png
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p4_smooth/refractive_index/*.png
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p4_smooth/refractive_index_npy/*.npy
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p4_smooth/summary.json
+notes:
+- refractive_index is the optical-density proxy `-log(transmission)`, not a physically calibrated refractive index.
+- mean mapping uses bounded monotonic scaling into [0, 1] so every sample mean is about 0.4.
+
+### synthesize_nh_haze_inputs_from_refractive
+module_name: synthesize_nh_haze_inputs_from_refractive
+location: /home/huhao/adv_ir/source/synthesize_nh_haze_inputs_from_refractive.py
+kind: script
+summary: synthesize additional hazy input images from target images, refractive proxy maps, and mapped global airlight.
+run:
+- conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/synthesize_nh_haze_inputs_from_refractive.py --dataset_roots /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p4 /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p4_smooth --light_csv /home/huhao/adv_ir/dataset_ours/haze/nh_haze_light_0p9_1/per_image_global_light_0p9_1.csv --output_subdir synthetic_input --airlight_mode rgb
+outputs:
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p4/synthetic_input/*.png
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p4/synthesis_manifest.csv
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p4/synthesis_summary.json
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p4_smooth/synthetic_input/*.png
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p4_smooth/synthesis_manifest.csv
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p4_smooth/synthesis_summary.json
+notes:
+- original input directories are preserved; synthetic hazy images are written to synthetic_input.
+- synthesis formula: `I = J * exp(-rho) + A * (1 - exp(-rho))`.
+- default airlight is mapped RGB light from nh_haze_light_0p9_1.
+
+### build_nh_haze_stepwise_test_datasets
+module_name: build_nh_haze_stepwise_test_datasets
+location: /home/huhao/adv_ir/source/build_nh_haze_stepwise_test_datasets.py
+kind: script
+summary: build three sequential NH-HAZE testing datasets (light-up -> refractive-down -> refractive-smooth), each with processed input/target pairs directly usable by evaluation scripts.
+run:
+- conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/build_nh_haze_stepwise_test_datasets.py --estimates_csv /home/huhao/adv_ir/dataset/haze/nh_haze/estimates/per_image_estimates.csv --stage1_root /home/huhao/adv_ir/dataset_ours/haze/nh_haze_step1_light_up --stage2_root /home/huhao/adv_ir/dataset_ours/haze/nh_haze_step2_light_up_refractive_down --stage3_root /home/huhao/adv_ir/dataset_ours/haze/nh_haze_step3_light_up_refractive_down_smooth --light_out_min 0.9 --light_out_max 1.0 --refractive_target_mean 0.4 --smooth_radius 16.0
+outputs:
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_step1_light_up/input/*.png
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_step2_light_up_refractive_down/input/*.png
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_step3_light_up_refractive_down_smooth/input/*.png
+- each step root also includes `target`, `input_original`, `refractive_index_npy`, `refractive_index`, `airlight_rgb_npy`, `manifest.csv`, `summary.json`
+notes:
+- step1 keeps original refractive proxy and only raises global airlight.
+- step2 lowers refractive proxy by bounded mean-matching to 0.4.
+- step3 smooths step2 refractive proxy with Gaussian blur (radius=16) and re-matches mean to 0.4.
+- all processed inputs are synthesized by `I = J * exp(-rho) + A * (1 - exp(-rho))`.
+
+### build_nh_haze_refractive_mean0p7_test_datasets
+module_name: build_nh_haze_refractive_mean0p7_test_datasets
+location: /home/huhao/adv_ir/source/build_nh_haze_refractive_mean0p7_test_datasets.py
+kind: script
+summary: build two no-step1 NH-HAZE testing datasets with refractive proxy mean target 0.7 (mapped and mapped+smooth), with processed input/target pairs directly testable.
+run:
+- conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/build_nh_haze_refractive_mean0p7_test_datasets.py --estimates_csv /home/huhao/adv_ir/dataset/haze/nh_haze/estimates/per_image_estimates.csv --mapped_root /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p7_no_step1 --smooth_root /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p7_no_step1_smooth --target_mean 0.7 --smooth_radius 16.0
+outputs:
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p7_no_step1/input/*.png
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p7_no_step1/target/*.png
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p7_no_step1/manifest.csv
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p7_no_step1/summary.json
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p7_no_step1_smooth/input/*.png
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p7_no_step1_smooth/target/*.png
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p7_no_step1_smooth/manifest.csv
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p7_no_step1_smooth/summary.json
+notes:
+- step1 light-up is intentionally skipped; airlight comes from original atmospheric light estimates.
+- mapped set targets rho mean ~0.7; smooth set applies Gaussian smoothing (radius=16) then keeps rho mean ~0.7.
+- processed inputs are synthesized by `I = J * exp(-rho) + A * (1 - exp(-rho))`.
+
+### build_nh_haze_8combo_datasets
+module_name: build_nh_haze_8combo_datasets
+location: /home/huhao/adv_ir/source/build_nh_haze_8combo_datasets.py
+kind: script
+summary: build 8 NH-HAZE testing datasets by the Cartesian product of mean target {0.4, 0.8}, smooth flag {0,1}, and final white-shift lightup flag {0,1}.
+run:
+- conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/build_nh_haze_8combo_datasets.py --estimates_csv /home/huhao/adv_ir/dataset/haze/nh_haze/estimates/per_image_estimates.csv --output_parent /home/huhao/adv_ir/dataset_ours/haze --means 0.4 0.8 --smooth_radius 16.0 --white_shift_alpha 0.12 --min_transmission 0.05 --demo_root /home/huhao/adv_ir/tmp_demo/nh_haze_8combo_build
+outputs:
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_mean0p4_smooth0_lightup0/{input,target,input_original,refractive_index,refractive_index_npy,manifest.csv,summary.json}
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_mean0p4_smooth0_lightup1/{input,target,input_original,refractive_index,refractive_index_npy,manifest.csv,summary.json}
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_mean0p4_smooth1_lightup0/{input,target,input_original,refractive_index,refractive_index_npy,manifest.csv,summary.json}
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_mean0p4_smooth1_lightup1/{input,target,input_original,refractive_index,refractive_index_npy,manifest.csv,summary.json}
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_mean0p8_smooth0_lightup0/{input,target,input_original,refractive_index,refractive_index_npy,manifest.csv,summary.json}
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_mean0p8_smooth0_lightup1/{input,target,input_original,refractive_index,refractive_index_npy,manifest.csv,summary.json}
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_mean0p8_smooth1_lightup0/{input,target,input_original,refractive_index,refractive_index_npy,manifest.csv,summary.json}
+- /home/huhao/adv_ir/dataset_ours/haze/nh_haze_mean0p8_smooth1_lightup1/{input,target,input_original,refractive_index,refractive_index_npy,manifest.csv,summary.json}
+- /home/huhao/adv_ir/tmp_demo/nh_haze_8combo_build/summary.json
+notes:
+- base airlight uses original atmospheric light estimates from per_image_estimates.csv.
+- transmission is estimated from paired hazy/target and converted to rho via `rho=-log(t)` with min transmission clipping.
+- smooth flag applies Gaussian smoothing (radius=16) and then re-matches rho mean.
+- lightup flag applies final white-shift, not airlight remapping: `I <- I*(1-alpha)+alpha`, alpha default 0.12.
+
 ### motion_blur_dataset_builder
 module_name: motion_blur_dataset_builder
 location: /home/huhao/adv_ir/source/motion_blur_dataset_builder.py
@@ -180,6 +345,22 @@ outputs:
 - /home/huhao/adv_ir/dataset/motion_sim/<split>/target/*.png
 - /home/huhao/adv_ir/dataset/motion_sim/<split>/manifest.json
 - /home/huhao/adv_ir/dataset/motion_sim/<split>/summary.json
+
+### reside_ots_sim_haze_dataset_builder
+module_name: reside_ots_sim_haze_dataset_builder
+location: /home/huhao/adv_ir/source/reside_ots_sim_haze_dataset_builder.py
+kind: script
+summary: generate split-wise haze paired datasets from promptir clear manifests with per-image scalar global light and fog density sampled by exp-uniform (log-uniform).
+run:
+- conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/reside_ots_sim_haze_dataset_builder.py --split train --count 16384 --splits_json /home/huhao/adv_ir/dataset_path/promptir_clear_depth_sets_only.json --output_root /home/huhao/adv_ir/dataset/haze/reside_ots_sim --seed 123 --global_light_min 0.5 --global_light_max 1.0 --fog_density_min 0.1 --fog_density_max 1.0 --device auto
+outputs:
+- /home/huhao/adv_ir/dataset/haze/reside_ots_sim/<split>/input/*.png
+- /home/huhao/adv_ir/dataset/haze/reside_ots_sim/<split>/target/*.png
+- /home/huhao/adv_ir/dataset/haze/reside_ots_sim/<split>/manifest.json
+- /home/huhao/adv_ir/dataset/haze/reside_ots_sim/<split>/summary.json
+notes:
+- haze synthesis uses scalar per-image parameters: `I = J * exp(-beta) + A * (1 - exp(-beta))`.
+- exp-uniform sampling formula for both `A` and `beta`: `x = exp(uniform(log(min), log(max)))`.
 
 ### filter_promptir_clear_depth_splits_by_area_percentile
 module_name: filter_promptir_clear_depth_splits_by_area_percentile
@@ -383,16 +564,49 @@ notes:
   --adv_motion_num_steps 16, --adv_motion_dmax -0.02, --adv_motion_dlambda 0.0.
 - dataset root is pinned by `--motion_blur_dir /home/huhao/adv_ir/dataset/motion_sim`.
 
+### run_train_nafnet_haze_hard
+module_name: run_train_nafnet_haze_hard
+location: /home/huhao/adv_ir/exe/haze/run_train_nafnet_haze_hard.sh
+kind: shell script
+summary: one-command launcher for PromptIR NAFNet training on haze_hard paired dataset (`reside_ots_sim`) with task name `haze_hard`.
+run:
+- bash /home/huhao/adv_ir/exe/haze/run_train_nafnet_haze_hard.sh
+- NUM_GPUS=3 CKPT_DIR=/home/huhao/adv_ir/exp/haze/train_ckpt_nafnet_haze_hard WANDB_RUN_NAME=haze_hard bash /home/huhao/adv_ir/exe/haze/run_train_nafnet_haze_hard.sh
+outputs: /home/huhao/adv_ir/exp/haze/train_ckpt_nafnet_haze_hard
+notes:
+- reuses PromptIR paired split loader via `--de_type haze_hard` (alias to motion_blur id=5).
+- dataset root is pinned by `--motion_blur_dir /home/huhao/adv_ir/dataset/haze/reside_ots_sim`.
+- default run name is pinned by script argument: `--wandb_run_name haze_hard`.
+
+### run_train_nafnet_adv50_gaussian_airlight05_10_beta01_08_log
+module_name: run_train_nafnet_adv50_gaussian_airlight05_10_beta01_08_log
+location: /home/huhao/adv_ir/exe/haze/run_train_nafnet_adv50_gaussian_airlight05_10_beta01_08_log.sh
+kind: shell script
+summary: one-command launcher for PromptIR NAFNet adversarial training on haze_hard paired dataset (`reside_ots_sim`) with gaussian adv settings and haze random override flags.
+run: bash /home/huhao/adv_ir/exe/haze/run_train_nafnet_adv50_gaussian_airlight05_10_beta01_08_log.sh
+outputs: /home/huhao/adv_ir/exp/haze/train_ckpt_nafnet_adv50_gaussian_haze_hard_airlight05_10_beta01_08_log
+notes:
+- uses `python adv_train.py` with `--de_type haze_hard`.
+- dataset root is pinned by `--motion_blur_dir /home/huhao/adv_ir/dataset/haze/reside_ots_sim`.
+- keeps gaussian interpolation control-map settings aligned with adv50 gaussian baseline launcher.
+- enables:
+  - `--adv_haze_airlight_min 0.5`
+  - `--adv_haze_airlight_max 1.0`
+  - `--adv_haze_beta_mean_min 0.1`
+  - `--adv_haze_beta_mean_max 0.8`
+  - `--adv_haze_beta_mean_log_uniform`
+
 ### promptir_train_dataset_loader
 module_name: promptir_train_dataset_loader
 location: /home/huhao/adv_ir/PromptIR/utils/dataset_utils.py
 kind: module
-summary: PromptIR training dataset loader now supports motion-blur paired data (`motion_blur` / `de_motion_blur`) in addition to dehaze/derain/denoise.
+summary: PromptIR training dataset loader now supports motion-blur paired data (`motion_blur` / `de_motion_blur` / `deblur` / `haze_hard`) in addition to dehaze/derain/denoise.
 run: imported by /home/huhao/adv_ir/PromptIR/train.py and /home/huhao/adv_ir/PromptIR/adv_train.py
 outputs: runtime train/val sample tensors and id metadata
 notes:
 - motion blur loader expects `<motion_blur_dir>/<split>/input` and `<motion_blur_dir>/<split>/target` with same filenames.
 - supports fallback direct layout `<motion_blur_dir>/input` + `<motion_blur_dir>/target`.
+- alias note: `haze_hard` is mapped to de_type id `5` (same path as motion_blur).
 
 ### promptir_wandb_run_name
 module_name: promptir_wandb_run_name
