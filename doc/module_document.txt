@@ -74,7 +74,9 @@ notes:
 - interpolation parameters are explicit function arguments:
   - random_haze_degradation_config_from_image(image, interp_mode, gaussian_radius, gaussian_sigma, gaussian_extra_cells)
   - random_motion_blur_degradation_config_from_image(image, num_steps, dmax, dlambda, interp_mode, ...)
-  - motion random sampler behavior: when dmax is not None, cfg.dmax is sampled uniformly from [dmax/2, dmax] (order-insensitive for negative dmax)
+  - both random samplers accept control-map value smoothness weights:
+    - `map_lambda_first_order`, `map_lambda_second_order`
+  - motion random sampler behavior: when dmax is not None, cfg.dmax is sampled uniformly from [dmax/2, dmax] (order-insensitive for sign/order)
   - random_degradation_configs_from_image(...) is kept as a haze-only alias for compatibility
   - default values keep current behavior: bicubic + align_corners=False path
 - differentiable motion blur module:
@@ -83,13 +85,16 @@ notes:
   - input: image [B,C,H,W], optional dx [B,2,H,W] override
   - output pixel equals centered line average from p-dx(p)/2 to p+dx(p)/2 via K-point differentiable sampling
   - defaults: num_steps=16, batchify_steps=true, dmax=None, dlambda=0.0
+  - dx unit semantics:
+    - trainable/internal dx and optional external dx are diagonal-normalized (`diagonal_length = 1`)
+    - pixel displacement used by sampling is computed as `dx_pixel = dx * diagonal_length`
   - dmax semantics:
     - dmax is None: no clipping
-    - dmax >= 0: clip with this absolute pixel value
-    - dmax < 0: effective_dmax = (-dmax) * diagonal_length
+    - dmax is numeric: effective_dmax = abs(dmax) (in diagonal-normalized unit)
+    - projection is by vector magnitude and global normalization: for non-zero flow, max `||dx||_2` becomes `effective_dmax`
   - regularization:
     - map regularization from both control maps
-    - dx magnitude regularization weighted by dlambda
+    - dx magnitude regularization weighted by dlambda (computed in diagonal-normalized unit)
   - projection:
     - project_trainable_parameters_() projects gaussian offsets and clamps low-res dx when dmax is set
 
@@ -126,13 +131,16 @@ notes:
   - CLI args exposed in /home/huhao/adv_ir/PromptIR/options.py:
     --adv_gaussian_enable_offset
     --adv_gaussian_offset_max
+    --adv_map_lambda_first_order
+    --adv_map_lambda_second_order
     --adv_gaussian_offset_lambda_first_order
     --adv_gaussian_offset_lambda_second_order
 - optional motion blur adversarial args (read via getattr):
   - these are exposed in /home/huhao/adv_ir/PromptIR/options.py
   - adv_motion_num_steps (default 16)
-  - adv_motion_dmax (default -0.02)
+  - adv_motion_dmax (default -0.02; effective limit uses abs value in diagonal-normalized unit)
   - adv_motion_dlambda (default 0.0)
+  - adv_motion_low_res_height / adv_motion_low_res_width (default None; override motion control-map low-res size when provided)
 - optional haze adversarial random-range args (read via getattr):
   - these are exposed in /home/huhao/adv_ir/PromptIR/options.py
   - adv_haze_airlight_min / adv_haze_airlight_max (default 0.85 / 1.0)
@@ -337,7 +345,7 @@ notes:
 module_name: motion_blur_dataset_builder
 location: /home/huhao/adv_ir/source/motion_blur_dataset_builder.py
 kind: script
-summary: generate split-wise paired motion-blur datasets from promptir clear manifests; per-image dx magnitude/direction is sampled randomly (floating-point) and supports multi-GPU execution by per-process device binding.
+summary: generate split-wise paired motion-blur datasets from promptir clear manifests; per-image dx magnitude/direction is sampled randomly (floating-point, diagonal-normalized unit with diagonal_length=1) and supports multi-GPU execution by per-process device binding.
 run:
 - conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/motion_blur_dataset_builder.py --split train --count 16384 --splits_json /home/huhao/adv_ir/dataset_path/promptir_clear_depth_sets_only.json --output_root /home/huhao/adv_ir/dataset/motion_sim --seed 123 --dmax_min -0.02 --dmax_max -0.0 --num_steps 16 --batchify_steps --device cuda:0
 outputs:
@@ -345,6 +353,89 @@ outputs:
 - /home/huhao/adv_ir/dataset/motion_sim/<split>/target/*.png
 - /home/huhao/adv_ir/dataset/motion_sim/<split>/manifest.json
 - /home/huhao/adv_ir/dataset/motion_sim/<split>/summary.json
+
+### motion_blur_dataset_builder_radial_alpha
+module_name: motion_blur_dataset_builder_radial_alpha
+location: /home/huhao/adv_ir/source/motion_blur_dataset_builder_radial_alpha.py
+kind: script
+summary: generate split-wise paired motion-blur datasets with per-pixel tangential displacement field, where in center-origin normalized polar coordinates (diagonal=1), the vector is `v(r,theta)=alpha*r*e_theta(theta)` and alpha is sampled per image; supports sampled vector-field visualization export (`v_field_sampled`) and per-image origin sampling mode.
+run:
+- conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/motion_blur_dataset_builder_radial_alpha.py --split test --count 1024 --splits_json /home/huhao/adv_ir/dataset_path/promptir_clear_depth_sets_only.json --output_root /home/huhao/adv_ir/dataset_ours/motion_blur_rotation0.05 --seed 323 --alpha_min 0.05 --alpha_max 0.05 --num_steps 16 --batchify_steps --mode bilinear --padding_mode border --align_corners --device cuda:0 --save_viz --viz_count 64 --viz_stride 48 --viz_max_points 2048 --viz_arrow_scale 5.0 --origin_mode uniform_random --flat_output
+outputs:
+- /home/huhao/adv_ir/dataset_ours/motion_blur_rotation0.05/input/*.png
+- /home/huhao/adv_ir/dataset_ours/motion_blur_rotation0.05/target/*.png
+- /home/huhao/adv_ir/dataset_ours/motion_blur_rotation0.05/v_field_sampled/*.png
+- /home/huhao/adv_ir/dataset_ours/motion_blur_rotation0.05/manifest.json
+- /home/huhao/adv_ir/dataset_ours/motion_blur_rotation0.05/summary.json
+notes:
+- implementation is independent from the legacy `motion_blur_dataset_builder.py`.
+- default alpha range is [0.01, 0.02].
+- supports fixed alpha by setting `alpha_min == alpha_max` (manifest `alpha_sampling=fixed`).
+- supports per-image random polar origin via `--origin_mode uniform_random`.
+- per-image manifest records include sampled alpha, per-image dx magnitude statistics, and optional sampled vector-field viz path/meta.
+- vector-field viz is black/white only (black background + white arrows), no source image overlay.
+- tangential pixel-space expression is `dx_pixel = alpha * [-(y-origin_y), (x-origin_x)]`.
+
+### generate_motion_blur_adv_samples
+module_name: generate_motion_blur_adv_samples
+location: /home/huhao/adv_ir/source/generate_motion_blur_adv_samples.py
+kind: script
+summary: generate motion-blur adversarial samples against a specified PromptIR/NAFNet checkpoint and preserve corresponding motion strength fields (`|dx|`) and raw dx maps.
+run:
+- conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/generate_motion_blur_adv_samples.py --model_path /home/huhao/adv_ir/exp/motion_blur/train_ckpt_nafnet/epoch=128-step=87297.ckpt --split test --count 16 --splits_json /home/huhao/adv_ir/dataset_path/promptir_clear_depth_sets_only.json --output_root /home/huhao/adv_ir/dataset_ours/motion_blur_adv16_nafnet_epoch128_step87297 --seed 323 --device cuda:0 --steps1 2 --steps2 2 --step_size 0.03 --lambda_reg 2.0 --promptir_patch_size 128 --promptir_patch_overlap 32 --motion_num_steps 16 --motion_dmax -0.02 --motion_dlambda 0.0
+outputs:
+- /home/huhao/adv_ir/dataset_ours/motion_blur_adv16_nafnet_epoch128_step87297/input/*.png
+- /home/huhao/adv_ir/dataset_ours/motion_blur_adv16_nafnet_epoch128_step87297/target/*.png
+- /home/huhao/adv_ir/dataset_ours/motion_blur_adv16_nafnet_epoch128_step87297/restored/*.png
+- /home/huhao/adv_ir/dataset_ours/motion_blur_adv16_nafnet_epoch128_step87297/motion_strength/*.png
+- /home/huhao/adv_ir/dataset_ours/motion_blur_adv16_nafnet_epoch128_step87297/motion_strength_npy/*.npy
+- /home/huhao/adv_ir/dataset_ours/motion_blur_adv16_nafnet_epoch128_step87297/dx_npy/*.npy
+- /home/huhao/adv_ir/dataset_ours/motion_blur_adv16_nafnet_epoch128_step87297/low_res_dx_map_npy/*.npy
+- /home/huhao/adv_ir/dataset_ours/motion_blur_adv16_nafnet_epoch128_step87297/low_res_dy_map_npy/*.npy
+- /home/huhao/adv_ir/dataset_ours/motion_blur_adv16_nafnet_epoch128_step87297/low_res_dx_map_png/*.png
+- /home/huhao/adv_ir/dataset_ours/motion_blur_adv16_nafnet_epoch128_step87297/low_res_dy_map_png/*.png
+- /home/huhao/adv_ir/dataset_ours/motion_blur_adv16_nafnet_epoch128_step87297/attack_log/*.json
+- /home/huhao/adv_ir/dataset_ours/motion_blur_adv16_nafnet_epoch128_step87297/manifest.json
+- /home/huhao/adv_ir/dataset_ours/motion_blur_adv16_nafnet_epoch128_step87297/summary.json
+notes:
+- motion strength field is computed from the final optimized controller as `|dx| = sqrt(dx_x^2 + dx_y^2)` in diagonal-normalized unit (`diagonal_length=1`).
+- raw flow maps are saved as numpy arrays with shape `[2, H, W]` in `dx_npy`, using diagonal-normalized unit.
+- final low-res control maps are additionally saved as:
+  - `low_res_dx_map_npy` / `low_res_dy_map_npy` (`[h_low, w_low]`, diagonal-normalized unit)
+  - `low_res_dx_map_png` / `low_res_dy_map_png` (signed visualization, zero as mid-gray)
+- sample source pool comes from `promptir_clear_depth_sets_only.json` clear paths of selected split.
+- configurable motion-control options:
+  - `--motion_interp_mode` controls control-map interpolation backend (`nearest|bilinear|bicubic|area|gaussian`).
+  - `--motion_low_res_height/--motion_low_res_width` override low-res control-map size (for example `8x8`).
+  - `--save_npy / --no-save_npy` toggles whether `dx`/strength/low-res maps are dumped as `.npy`.
+
+### merge_motion_blur_split_shards
+module_name: merge_motion_blur_split_shards
+location: /home/huhao/adv_ir/source/merge_motion_blur_split_shards.py
+kind: script
+summary: merge shard outputs (`manifest_shard*.json` and `summary_shard*.json`) for one split into canonical `manifest.json` and `summary.json`.
+run:
+- conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/merge_motion_blur_split_shards.py --split_root /home/huhao/adv_ir/dataset/motion_sim_radial_alpha/train --manifest_glob manifest_shard*.json --summary_glob summary_shard*.json
+outputs:
+- /home/huhao/adv_ir/dataset/motion_sim_radial_alpha/train/manifest.json
+- /home/huhao/adv_ir/dataset/motion_sim_radial_alpha/train/summary.json
+
+### run_motion_blur_dataset_builder_radial_alpha
+module_name: run_motion_blur_dataset_builder_radial_alpha
+location: /home/huhao/adv_ir/source/run_motion_blur_dataset_builder_radial_alpha.sh
+kind: shell script
+summary: one-command launcher for the radial-alpha motion blur dataset builder; supports 3-shard train generation on cuda:0/1/2, shard merge, and val/test generation.
+run:
+- bash /home/huhao/adv_ir/source/run_motion_blur_dataset_builder_radial_alpha.sh
+outputs:
+- default output root: /home/huhao/adv_ir/dataset_ours/motion_blur_rotation0.02
+- /home/huhao/adv_ir/dataset_ours/motion_blur_rotation0.02/train/{input,target,v_field_sampled,manifest*.json,summary*.json}
+- /home/huhao/adv_ir/dataset_ours/motion_blur_rotation0.02/val/{input,target,v_field_sampled,manifest.json,summary.json}
+- /home/huhao/adv_ir/dataset_ours/motion_blur_rotation0.02/test/{input,target,v_field_sampled,manifest.json,summary.json}
+notes:
+- default alpha range is [0.01, 0.02].
+- default sampled vector-field visualization is enabled (`SAVE_VIZ=1`, first 24 samples per split).
+- default v-field viz parameters: `VIZ_STRIDE=48`, `VIZ_MAX_POINTS=2048`, `VIZ_ARROW_SCALE=5.0`.
 
 ### reside_ots_sim_haze_dataset_builder
 module_name: reside_ots_sim_haze_dataset_builder
@@ -361,6 +452,7 @@ outputs:
 notes:
 - haze synthesis uses scalar per-image parameters: `I = J * exp(-beta) + A * (1 - exp(-beta))`.
 - exp-uniform sampling formula for both `A` and `beta`: `x = exp(uniform(log(min), log(max)))`.
+- manifest per-record fields no longer include `transmission_scalar`; only sampled `global_light_intensity` and `fog_density` are stored.
 
 ### filter_promptir_clear_depth_splits_by_area_percentile
 module_name: filter_promptir_clear_depth_splits_by_area_percentile
@@ -564,6 +656,22 @@ notes:
   --adv_motion_num_steps 16, --adv_motion_dmax -0.02, --adv_motion_dlambda 0.0.
 - dataset root is pinned by `--motion_blur_dir /home/huhao/adv_ir/dataset/motion_sim`.
 
+### run_train_nafnet_motion_blur_adv50_gaussian
+module_name: run_train_nafnet_motion_blur_adv50_gaussian
+location: /home/huhao/adv_ir/exe/motion_blur/run_train_nafnet_adv50_gaussian.sh
+kind: shell script
+summary: one-command launcher for PromptIR NAFNet motion_blur adversarial mix training at 50% ratio with gaussian control-map interpolation.
+run: bash /home/huhao/adv_ir/exe/motion_blur/run_train_nafnet_adv50_gaussian.sh
+outputs: /home/huhao/adv_ir/exp/motion_blur/train_ckpt_nafnet_adv50_gaussian
+notes:
+- uses `python adv_train.py` with `--de_type motion_blur`.
+- adversarial settings pinned in script:
+  - `--adv_steps1 4 --adv_steps2 16`
+  - `--adv_motion_num_steps 16 --adv_motion_dmax 0.05 --adv_motion_dlambda 0.0`
+  - `--adv_map_interp_mode gaussian`
+  - `--adv_motion_low_res_height 8 --adv_motion_low_res_width 8`
+  - `--adv_map_lambda_first_order 2 --adv_map_lambda_second_order 10`
+
 ### run_train_nafnet_haze_hard
 module_name: run_train_nafnet_haze_hard
 location: /home/huhao/adv_ir/exe/haze/run_train_nafnet_haze_hard.sh
@@ -635,3 +743,18 @@ notes:
   - /home/huhao/adv_ir/PromptIR/data_dir/rainy/rainTrain_{train,val,test}.txt
   - /home/huhao/adv_ir/PromptIR/data_dir/hazy/hazy_outside_{train,val,test}.txt
 - depth paths are available for haze-derived clear images only.
+
+### test_latest
+module_name: test_latest
+location: /home/huhao/adv_ir/source/test_latest.sh
+kind: shell script
+summary: run paired-dataset evaluation with the latest checkpoint found in a checkpoint directory.
+run:
+- bash /home/huhao/adv_ir/source/test_latest.sh
+- bash /home/huhao/adv_ir/source/test_latest.sh -s /home/huhao/adv_ir/tmp_demo/test_latest_saved /home/huhao/adv_ir/exp/haze/train_ckpt_nafnet_adv50_gaussian /home/huhao/adv_ir/dataset_ours/haze_dataset_builder cpu --max_samples 8
+outputs:
+- metrics: <output_dir>/{metrics_per_sample.csv,metrics_summary.json,skipped_samples.json}
+- optional restored images: <output_dir>/restored/*.png
+notes:
+- positional args keep backward compatibility: `[CKPT_DIR] [DATASET_ROOT] [DEVICE] [OUTPUT_DIR] [extra args...]`.
+- `-s PATH` / `--s PATH` overrides `OUTPUT_DIR` to `PATH` and auto-appends `--save_restored`.

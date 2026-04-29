@@ -1,6 +1,6 @@
 work_log_rolling
 
-last_update: 2026-04-26
+last_update: 2026-04-29
 workspace_root: /home/huhao/adv_ir
 
 purpose:
@@ -17,77 +17,436 @@ maintenance_rule:
 
 handoff_now:
 - current_focus:
-  - adjusted adv50 gaussian airlight/beta launcher to haze_hard-style script layout using reside_ots_sim paired dataset root.
+  - wrote the requested motion_blur training settings into `exe/motion_blur/run_train_nafnet_adv50_gaussian.sh`.
 - status:
-  - running (started on 2026-04-26).
+  - completed on 2026-04-29.
 - key_behavior:
-  - updated haze adversarial random sampler path:
-    - /home/huhao/adv_ir/source/degradation.py
-    - /home/huhao/adv_ir/source/promptir_attack.py
-    - /home/huhao/adv_ir/source/promptir_adv_training.py
-    - /home/huhao/adv_ir/PromptIR/options.py
-  - new configurable haze adversarial args:
-    - `adv_haze_airlight_min`, `adv_haze_airlight_max`, `adv_haze_airlight_jitter`
-    - `adv_haze_beta_mean_min`, `adv_haze_beta_mean_max`, `adv_haze_beta_mean_log_uniform`
-  - added launcher:
-    - /home/huhao/adv_ir/exe/haze/run_train_nafnet_adv50_gaussian_airlight05_10_beta01_08_log.sh
-  - launcher target setting:
-    - airlight in [0.5, 1.0]
-    - beta_mean in [0.1, 0.8], sampled log-uniform
+  - updated training launcher:
+    - `/home/huhao/adv_ir/exe/motion_blur/run_train_nafnet_adv50_gaussian.sh`
+    - pinned settings now include:
+      - `--adv_steps1 4 --adv_steps2 16`
+      - `--adv_motion_dmax 0.05`
+      - `--adv_map_interp_mode gaussian`
+      - `--adv_motion_low_res_height 8 --adv_motion_low_res_width 8`
+      - `--adv_map_lambda_first_order 2 --adv_map_lambda_second_order 10`
+  - exposed motion low-res size args to adv training:
+    - `/home/huhao/adv_ir/PromptIR/options.py`
+    - `/home/huhao/adv_ir/source/promptir_adv_training.py`
 - latest_demo_output:
-  - /home/huhao/adv_ir/tmp_demo/haze_hard_adv50_gaussian_airlight_script_demo/summary.txt
+  - N/A (script/config update only)
 - key_docs_synced:
   - /home/huhao/adv_ir/source/doc/module_document.txt
   - /home/huhao/adv_ir/source/doc/work_log.txt
 
 quick_continue_checklist:
-- new adv50 gaussian launcher with haze random-range override:
-  - `bash /home/huhao/adv_ir/exe/haze/run_train_nafnet_adv50_gaussian_airlight05_10_beta01_08_log.sh`
-- new args in PromptIR options:
-  - `--adv_haze_airlight_min/--adv_haze_airlight_max`
-  - `--adv_haze_beta_mean_min/--adv_haze_beta_mean_max`
-  - `--adv_haze_beta_mean_log_uniform`
-- monitor training:
-  - `tmux attach -t haze_hard_train`
-  - `sed -n '1,220p' /home/huhao/adv_ir/logs/haze_hard_train_20260426_193101.log`
-- stop training:
-  - `tmux kill-session -t haze_hard_train`
-- checkpoint root:
-  - /home/huhao/adv_ir/exp/haze/train_ckpt_nafnet_haze_hard
-- RESIDE-OTS-SIM split dataset is available at:
-  - /home/huhao/adv_ir/dataset/haze/reside_ots_sim/train
-  - /home/huhao/adv_ir/dataset/haze/reside_ots_sim/val
-  - /home/huhao/adv_ir/dataset/haze/reside_ots_sim/test
-- generation script and parameters:
-  - /home/huhao/adv_ir/source/reside_ots_sim_haze_dataset_builder.py
-  - global light range: [0.5, 1.0]
-  - fog density range: [0.1, 1.0]
-  - sampling mode: exp-uniform
-- use /home/huhao/adv_ir/dataset/haze/nh_haze as a paired dataset root with input/target subdirs.
-- mapped global-light metadata is available at /home/huhao/adv_ir/dataset_ours/haze/nh_haze_light_0p9_1/per_image_global_light_0p9_1.csv.
-- materialized mapped dataset is available at /home/huhao/adv_ir/dataset_ours/haze/nh_haze_light_0p9_1 with input/target images and light files.
-- refractive-index proxy datasets are available at /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p4 and /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p4_smooth.
-- these refractive-index proxy datasets now include synthetic_input/*.png generated from target + rho + mapped RGB airlight.
-- sequential stepwise testing datasets are available at:
-  - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_step1_light_up
-  - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_step2_light_up_refractive_down
-  - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_step3_light_up_refractive_down_smooth
-- no-step1 mean0.7 testing datasets are available at:
-  - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p7_no_step1
-  - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_refractive_mean0p7_no_step1_smooth
-- 8 combo testing datasets are available at:
-  - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_mean0p4_smooth0_lightup0
-  - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_mean0p4_smooth0_lightup1
-  - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_mean0p4_smooth1_lightup0
-  - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_mean0p4_smooth1_lightup1
-  - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_mean0p8_smooth0_lightup0
-  - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_mean0p8_smooth0_lightup1
-  - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_mean0p8_smooth1_lightup0
-  - /home/huhao/adv_ir/dataset_ours/haze/nh_haze_mean0p8_smooth1_lightup1
-- latest NH-HAZE global-light-mapped dataset evaluation on adv50 gaussian ckpt was run with GPU via escalated command because sandboxed CUDA/NVML was unavailable.
-- estimated optical-density maps are proxy maps only; true refractive index needs physical calibration/depth.
+- run training launcher:
+  - `bash /home/huhao/adv_ir/exe/motion_blur/run_train_nafnet_adv50_gaussian.sh`
+- quick checks:
+  - `bash -n /home/huhao/adv_ir/exe/motion_blur/run_train_nafnet_adv50_gaussian.sh`
+  - `conda run -n promptir --no-capture-output python -m py_compile /home/huhao/adv_ir/PromptIR/options.py`
 
 recent_sessions:
+
+- date: 2026-04-29
+  title: write requested motion_blur training settings into gaussian adv50 launcher
+  changes:
+  - updated:
+    - /home/huhao/adv_ir/exe/motion_blur/run_train_nafnet_adv50_gaussian.sh
+    - /home/huhao/adv_ir/PromptIR/options.py
+    - /home/huhao/adv_ir/source/promptir_adv_training.py
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  - behavior:
+    - launcher now pins:
+      - `adv_steps1=4`, `adv_steps2=16`
+      - `adv_motion_dmax=0.05`
+      - `adv_map_interp_mode=gaussian`
+      - `adv_motion_low_res_height=8`, `adv_motion_low_res_width=8`
+      - `adv_map_lambda_first_order=2`, `adv_map_lambda_second_order=10`
+    - added new CLI args for adv training:
+      - `--adv_motion_low_res_height`
+      - `--adv_motion_low_res_width`
+  validations:
+  - syntax checks passed:
+    - `conda run -n advir --no-capture-output python -m py_compile /home/huhao/adv_ir/source/promptir_adv_training.py`
+    - `conda run -n promptir --no-capture-output python -m py_compile /home/huhao/adv_ir/PromptIR/options.py`
+    - `bash -n /home/huhao/adv_ir/exe/motion_blur/run_train_nafnet_adv50_gaussian.sh`
+
+- date: 2026-04-29
+  title: change motion_blur projection so max |dx| magnitude equals dmax
+  changes:
+  - updated:
+    - /home/huhao/adv_ir/source/degradation.py
+    - /home/huhao/adv_ir/tests/test_degradations.py
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  - behavior:
+    - dmax projection now uses global scaling per sample in diagonal-normalized unit.
+    - for non-zero flow, projected result satisfies `max(||dx||_2) == abs(dmax)`.
+  validations:
+  - tmp_demo reset passed:
+    - `rm -rf /home/huhao/adv_ir/tmp_demo`
+    - `mkdir -p /home/huhao/adv_ir/tmp_demo`
+  - syntax checks passed:
+    - `conda run -n advir --no-capture-output python -m py_compile /home/huhao/adv_ir/source/degradation.py /home/huhao/adv_ir/tests/test_degradations.py`
+  - tests passed:
+    - `conda run -n advir --no-capture-output python -m pytest /home/huhao/adv_ir/tests/test_degradations.py -k "motion_blur"`
+  - demo passed:
+    - `/home/huhao/adv_ir/tmp_demo/motion_blur_project_to_dmax/summary.json`
+
+- date: 2026-04-29
+  title: generate adv samples with s1=4 s2=16 gaussian 8x8 low-res and no npy outputs
+  changes:
+  - updated:
+    - /home/huhao/adv_ir/source/degradation.py
+    - /home/huhao/adv_ir/source/promptir_attack.py
+    - /home/huhao/adv_ir/source/generate_motion_blur_adv_samples.py
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  - behavior:
+    - `generate_motion_blur_adv_samples.py` now supports:
+      - configurable motion control-map interpolation and low-res size
+      - disabling all npy outputs via `--no-save_npy`
+  validations:
+  - syntax check passed:
+    - `conda run -n advir --no-capture-output python -m py_compile /home/huhao/adv_ir/source/degradation.py /home/huhao/adv_ir/source/promptir_attack.py /home/huhao/adv_ir/source/generate_motion_blur_adv_samples.py`
+  - generation passed:
+    - output: `/home/huhao/adv_ir/tmp_demo/motion_blur_adv8_s4_s16_gaussian8x8_no_npy`
+    - summary confirms `steps1=4`, `steps2=16`, `interp_mode=gaussian`, `map_low_res_height=8`, `map_low_res_width=8`, `save_npy=false`
+    - npy count check: `0`
+
+- date: 2026-04-29
+  title: switch motion_blur dmax to L2 projection and expose map lambda weights to downstream
+  changes:
+  - updated:
+    - /home/huhao/adv_ir/source/degradation.py
+    - /home/huhao/adv_ir/source/promptir_attack.py
+    - /home/huhao/adv_ir/source/promptir_adv_training.py
+    - /home/huhao/adv_ir/source/generate_motion_blur_adv_samples.py
+    - /home/huhao/adv_ir/PromptIR/options.py
+    - /home/huhao/adv_ir/tests/test_degradations.py
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  - behavior:
+    - `dmax` now constrains `||dx||_2` instead of each component.
+    - downstream can pass control-map value smoothness weights (`lambda_first_order/second_order`) via new args.
+  validations:
+  - tmp_demo reset passed:
+    - `rm -rf /home/huhao/adv_ir/tmp_demo`
+    - `mkdir -p /home/huhao/adv_ir/tmp_demo`
+  - compile checks passed.
+  - tests passed:
+    - `tests/test_degradations.py -k motion_blur`
+    - `tests/test_promptir_attack_motion_blur.py`
+  - demo passed:
+    - `/home/huhao/adv_ir/tmp_demo/motion_blur_l2_clamp_and_map_lambda/summary.json`
+
+- date: 2026-04-29
+  title: regenerate 8 adv samples in tmp_demo and export low-res control maps
+  changes:
+  - updated:
+    - /home/huhao/adv_ir/source/generate_motion_blur_adv_samples.py
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  - behavior:
+    - new per-sample low-res map outputs:
+      - `low_res_dx_map_npy/*.npy`, `low_res_dy_map_npy/*.npy`
+      - `low_res_dx_map_png/*.png`, `low_res_dy_map_png/*.png`
+    - low-res maps are pulled from final optimized controller low-res parameters.
+  validations:
+  - tmp_demo reset passed:
+    - `rm -rf /home/huhao/adv_ir/tmp_demo`
+    - `mkdir -p /home/huhao/adv_ir/tmp_demo`
+  - syntax check passed:
+    - `conda run -n advir --no-capture-output python -m py_compile /home/huhao/adv_ir/source/generate_motion_blur_adv_samples.py`
+  - generation passed:
+    - output: `/home/huhao/adv_ir/tmp_demo/motion_blur_adv8_dmax0p05_with_lowres`
+    - summary confirms `motion_blur.dmax=0.05`, `dx_unit=diagonal_length=1`
+    - counts: input=8, motion_strength_npy=8, dx_npy=8, low_res_dx_map_npy=8, low_res_dy_map_npy=8, low_res_dx_map_png=8, low_res_dy_map_png=8
+
+- date: 2026-04-29
+  title: switch motion_blur dx and dlambda regularization to diagonal-normalized unit
+  changes:
+  - updated:
+    - /home/huhao/adv_ir/source/degradation.py
+    - /home/huhao/adv_ir/source/motion_blur_dataset_builder.py
+    - /home/huhao/adv_ir/source/generate_motion_blur_adv_samples.py
+    - /home/huhao/adv_ir/tests/test_degradations.py
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  - behavior:
+    - motion blur module now treats `dx` as diagonal-normalized unit (`diagonal_length=1`) everywhere.
+    - per-image sampling converts normalized `dx` to pixels only inside forward sampling.
+    - `dmax` clamp and `dlambda`-weighted magnitude regularization are both in diagonal-normalized unit.
+  validations:
+  - tmp_demo reset passed:
+    - `rm -rf /home/huhao/adv_ir/tmp_demo`
+    - `mkdir -p /home/huhao/adv_ir/tmp_demo`
+  - syntax checks passed:
+    - `conda run -n advir --no-capture-output python -m py_compile /home/huhao/adv_ir/source/degradation.py /home/huhao/adv_ir/source/motion_blur_dataset_builder.py /home/huhao/adv_ir/source/generate_motion_blur_adv_samples.py /home/huhao/adv_ir/tests/test_degradations.py`
+  - tests passed:
+    - `conda run -n advir --no-capture-output python -m pytest /home/huhao/adv_ir/tests/test_degradations.py -k "motion_blur"`
+  - demo passed:
+    - `/home/huhao/adv_ir/tmp_demo/motion_blur_diag_unit_smoke/summary.json`
+
+- date: 2026-04-28
+  title: unify motion_blur dmax to diagonal-length scaling for all signs
+  changes:
+  - updated:
+    - /home/huhao/adv_ir/source/degradation.py
+    - /home/huhao/adv_ir/source/motion_blur_dataset_builder.py
+    - /home/huhao/adv_ir/tests/test_degradations.py
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  - behavior:
+    - motion blur clipping no longer uses sign-specific units.
+    - new rule: `effective_dmax = abs(dmax) * diagonal_length`.
+    - dataset manifest rule text aligned to new behavior.
+  validations:
+  - tmp_demo reset passed:
+    - `rm -rf /home/huhao/adv_ir/tmp_demo`
+    - `mkdir -p /home/huhao/adv_ir/tmp_demo`
+  - syntax checks passed:
+    - `conda run -n advir --no-capture-output python -m py_compile /home/huhao/adv_ir/source/degradation.py /home/huhao/adv_ir/source/motion_blur_dataset_builder.py /home/huhao/adv_ir/tests/test_degradations.py`
+  - targeted tests passed:
+    - `conda run -n advir --no-capture-output python -m pytest /home/huhao/adv_ir/tests/test_degradations.py -k "motion_blur_dmax"`
+  - demo script passed:
+    - `/home/huhao/adv_ir/tmp_demo/motion_blur_dmax_diagonal_unified/demo_summary.json`
+
+- date: 2026-04-28
+  title: generate 16 motion-blur adversarial samples for NAFNet ckpt with motion strength fields
+  changes:
+  - added:
+    - /home/huhao/adv_ir/source/generate_motion_blur_adv_samples.py
+  - updated docs:
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  - behavior:
+    - adversarial generation uses motion-blur settings:
+      - steps1=2, steps2=2, step_size=0.03, lambda_reg=2.0
+      - motion_num_steps=16, motion_dmax=-0.02, motion_dlambda=0.0
+    - output includes `input/target/restored` and corresponding motion fields:
+      - `motion_strength/*.png`
+      - `motion_strength_npy/*.npy`
+      - `dx_npy/*.npy`
+  validations:
+  - tmp_demo reset passed:
+    - `rm -rf /home/huhao/adv_ir/tmp_demo`
+    - `mkdir -p /home/huhao/adv_ir/tmp_demo`
+  - syntax check passed:
+    - `conda run -n advir --no-capture-output python -m py_compile /home/huhao/adv_ir/source/generate_motion_blur_adv_samples.py`
+  - smoke generation passed:
+    - output: /home/huhao/adv_ir/tmp_demo/motion_blur_adv16_smoke
+    - counts: input=2, target=2, motion_strength=2, motion_strength_npy=2, dx_npy=2
+  - full generation passed:
+    - output: /home/huhao/adv_ir/dataset_ours/motion_blur_adv16_nafnet_epoch128_step87297
+    - counts: input=16, target=16, restored=16, motion_strength=16, motion_strength_npy=16, dx_npy=16, attack_log=16
+    - manifest records: 16
+
+- date: 2026-04-28
+  title: fixed alpha=0.05 with per-image uniform-random polar origin for motion_blur_rotation0.05
+  changes:
+  - updated:
+    - /home/huhao/adv_ir/source/motion_blur_dataset_builder_radial_alpha.py
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  - behavior:
+    - new builder option: `--origin_mode {center, uniform_random}`.
+    - when `origin_mode=uniform_random`, each image samples origin `(origin_x, origin_y)` uniformly in image area.
+    - fixed alpha supported by `--alpha_min 0.05 --alpha_max 0.05`.
+    - manifest sampling fields updated:
+      - `alpha_sampling=fixed` when min=max
+      - per-record `origin_x`, `origin_y`
+      - pixel conversion: `dx_pixel = alpha * [-(y-origin_y), (x-origin_x)]`
+  validations:
+  - syntax check passed:
+    - conda run -n advir --no-capture-output python -m py_compile /home/huhao/adv_ir/source/motion_blur_dataset_builder_radial_alpha.py
+  - dataset regeneration passed:
+    - /home/huhao/adv_ir/dataset_ours/motion_blur_rotation0.05
+    - counts: input=1024, target=1024, v_field_sampled=64, manifest.records=1024
+    - manifest shows:
+      - `alpha_min=alpha_max=0.05`
+      - `alpha_sampling=fixed`
+      - `origin_mode=uniform_random`
+
+- date: 2026-04-28
+  title: add -s/--s save-path option to test_latest launcher
+  changes:
+  - updated:
+    - /home/huhao/adv_ir/source/test_latest.sh
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  - behavior:
+    - new CLI option `-s PATH` / `--s PATH`.
+    - when set, launcher overrides output dir to PATH and auto-enables `--save_restored`.
+    - restored images are kept under `PATH/restored`.
+    - kept backward-compatible positional args and passthrough evaluator args.
+  validations:
+  - tmp_demo reset passed:
+    - `rm -rf /home/huhao/adv_ir/tmp_demo`
+    - `mkdir -p /home/huhao/adv_ir/tmp_demo`
+  - shell checks passed:
+    - `bash -n /home/huhao/adv_ir/source/test_latest.sh`
+    - `bash /home/huhao/adv_ir/source/test_latest.sh --help`
+  - smoke evaluation passed:
+    - `bash /home/huhao/adv_ir/source/test_latest.sh -s /home/huhao/adv_ir/tmp_demo/test_latest_s_save /home/huhao/adv_ir/exp/haze/train_ckpt_nafnet_adv50_gaussian /home/huhao/adv_ir/dataset_ours/haze_dataset_builder cpu --max_samples 1`
+    - generated:
+      - `/home/huhao/adv_ir/tmp_demo/test_latest_s_save/restored/000000.png`
+      - `/home/huhao/adv_ir/tmp_demo/test_latest_s_save/metrics_summary.json`
+
+- date: 2026-04-28
+  title: regenerate full reside_ots_sim dataset (train/val/test) without transmission_scalar field
+  changes:
+  - regenerated:
+    - /home/huhao/adv_ir/dataset/haze/reside_ots_sim/train
+    - /home/huhao/adv_ir/dataset/haze/reside_ots_sim/val
+    - /home/huhao/adv_ir/dataset/haze/reside_ots_sim/test
+  - implementation note:
+    - train was generated by 3 shard runs on `cuda:0/1/2` with disjoint `index_offset`, then merged from
+      `manifest_shard{0,1,2}.json` into `manifest.json` and `summary.json`.
+  validations:
+  - tmp_demo reset passed:
+    - `rm -rf /home/huhao/adv_ir/tmp_demo`
+    - `mkdir -p /home/huhao/adv_ir/tmp_demo`
+  - split generation passed:
+    - train shard0: `--count 5462 --index_offset 0 --artifact_suffix shard0 --device cuda:0`
+    - train shard1: `--count 5461 --index_offset 5462 --artifact_suffix shard1 --device cuda:1`
+    - train shard2: `--count 5461 --index_offset 10923 --artifact_suffix shard2 --device cuda:2`
+    - val: `--split val --count 1024 --device cuda:0`
+    - test: `--split test --count 1024 --device cuda:1`
+  - final count checks passed:
+    - train input/target: 16384 / 16384
+    - val input: 1024
+    - test input: 1024
+    - manifest counts and record lengths match summary counts for all splits.
+  - field check passed:
+    - `transmission_scalar` absent in train/val/test `manifest.records[*]`.
+
+- date: 2026-04-28
+  title: remove transmission_scalar output from RESIDE-OTS-SIM haze generation records
+  changes:
+  - updated:
+    - /home/huhao/adv_ir/source/reside_ots_sim_haze_dataset_builder.py
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  - behavior:
+    - `_apply_haze_with_scalar_params` now returns only hazy image tensor.
+    - generated `manifest.records[*]` no longer writes `transmission_scalar`.
+    - haze model and sampled parameter ranges remain unchanged.
+  validations:
+  - tmp_demo reset passed:
+    - `rm -rf /home/huhao/adv_ir/tmp_demo`
+    - `mkdir -p /home/huhao/adv_ir/tmp_demo`
+  - syntax check passed:
+    - `conda run -n advir --no-capture-output python -m py_compile /home/huhao/adv_ir/source/reside_ots_sim_haze_dataset_builder.py`
+  - smoke generation passed:
+    - `conda run -n advir --no-capture-output python /home/huhao/adv_ir/source/reside_ots_sim_haze_dataset_builder.py --split test --count 2 --splits_json /home/huhao/adv_ir/dataset_path/promptir_clear_depth_sets_only.json --output_root /home/huhao/adv_ir/tmp_demo/reside_ots_sim_no_transmission_scalar --seed 123 --global_light_min 0.5 --global_light_max 1.0 --fog_density_min 0.1 --fog_density_max 1.0 --device auto --progress_interval 1`
+    - output: `/home/huhao/adv_ir/tmp_demo/reside_ots_sim_no_transmission_scalar/test/{input,target,manifest.json,summary.json}`
+  - field removal check passed:
+    - `rg -n '"transmission_scalar"\\s*:' /home/huhao/adv_ir/tmp_demo/reside_ots_sim_no_transmission_scalar/test/manifest.json` (no match)
+
+- date: 2026-04-27
+  title: move exp to EXTPATH and export latest ckpt per group
+  changes:
+  - moved:
+    - `/home/huhao/adv_ir/exp` -> `/home/bbnclxy/ext8t-2/huhao/adv_ir/exp`
+    - created symlink: `/home/huhao/adv_ir/exp -> /home/bbnclxy/ext8t-2/huhao/adv_ir/exp`
+  - generated:
+    - `/home/huhao/adv_ir/exp_ckpt` with latest ckpt per group (group_count=17)
+    - `/home/huhao/adv_ir/exp_ckpt/summary_latest_ckpt_copy.json`
+  validations:
+  - symlink/path checks passed:
+    - `ls -ld /home/huhao/adv_ir/exp /home/bbnclxy/ext8t-2/huhao/adv_ir/exp`
+  - ckpt export checks passed:
+    - `find /home/huhao/adv_ir/exp_ckpt -type f -name '*.ckpt' | wc -l` -> 17
+    - summary confirms `group_count=17`
+
+- date: 2026-04-27
+  title: switch v-field to theta-direction and remove test subdirectory from output path
+  changes:
+  - updated:
+    - /home/huhao/adv_ir/source/motion_blur_dataset_builder_radial_alpha.py
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  - behavior:
+    - changed displacement from radial-direction to theta-direction tangential field.
+    - sampling model tag updated to `theta_tangential_alpha_r`.
+    - flat output mode added (`--flat_output`) so files can be written directly under output root without split subdir.
+    - regenerated dataset directly under `/home/huhao/adv_ir/dataset_ours/motion_blur_rotation0.02`.
+  validations:
+  - syntax checks passed:
+    - conda run -n advir --no-capture-output python -m py_compile /home/huhao/adv_ir/source/motion_blur_dataset_builder_radial_alpha.py
+  - regeneration passed:
+    - /home/huhao/adv_ir/dataset_ours/motion_blur_rotation0.02
+    - counts: input=1024, target=1024, v_field_sampled=64, manifest.records=1024
+    - no `/test` subdirectory exists.
+
+- date: 2026-04-27
+  title: densify v-field sampling and switch visualization to black/white with 5x arrows
+  changes:
+  - updated:
+    - /home/huhao/adv_ir/source/motion_blur_dataset_builder_radial_alpha.py
+    - /home/huhao/adv_ir/source/run_motion_blur_dataset_builder_radial_alpha.sh
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  - behavior:
+    - v-field visualization no longer overlays source image.
+    - visualization is now grayscale black background with white arrows only.
+    - default visualization parameters changed to denser sampling and larger arrows:
+      - viz_stride=48
+      - viz_max_points=2048
+      - viz_arrow_scale=5.0
+  validations:
+  - syntax checks passed:
+    - conda run -n advir --no-capture-output python -m py_compile /home/huhao/adv_ir/source/motion_blur_dataset_builder_radial_alpha.py
+    - bash -n /home/huhao/adv_ir/source/run_motion_blur_dataset_builder_radial_alpha.sh
+  - test-only regeneration passed:
+    - /home/huhao/adv_ir/dataset_ours/motion_blur_rotation0.02/test
+    - summary shows viz_stride=48, viz_max_points=2048, viz_arrow_scale=5.0
+    - sample viz mode: PIL mode `L`
+
+- date: 2026-04-27
+  title: add sampled v-field visualization and build test-only dataset at motion_blur_rotation0.02
+  changes:
+  - updated:
+    - /home/huhao/adv_ir/source/motion_blur_dataset_builder_radial_alpha.py
+    - /home/huhao/adv_ir/source/run_motion_blur_dataset_builder_radial_alpha.sh
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  - behavior:
+    - builder now supports sampled vector-field visualization output (`--save_viz`, `--viz_count`, `--viz_stride`, `--viz_max_points`, `--viz_arrow_scale`).
+    - default alpha range switched to [0.01, 0.02].
+    - launcher default output root switched to `/home/huhao/adv_ir/dataset_ours/motion_blur_rotation0.02`.
+  validations:
+  - syntax checks passed:
+    - conda run -n advir --no-capture-output python -m py_compile /home/huhao/adv_ir/source/motion_blur_dataset_builder_radial_alpha.py /home/huhao/adv_ir/source/merge_motion_blur_split_shards.py
+    - bash -n /home/huhao/adv_ir/source/run_motion_blur_dataset_builder_radial_alpha.sh
+  - smoke generation passed:
+    - OUTPUT_ROOT=/home/huhao/adv_ir/tmp_demo/motion_blur_rotation0p02_smoke TRAIN_USE_SHARDS=0 TRAIN_COUNT=4 VAL_COUNT=2 TEST_COUNT=2 TRAIN_SHARD0_DEVICE=auto VAL_DEVICE=auto TEST_DEVICE=auto PROGRESS_INTERVAL=1 SAVE_VIZ=1 VIZ_COUNT=2 VIZ_STRIDE=128 VIZ_MAX_POINTS=64 /home/huhao/adv_ir/source/run_motion_blur_dataset_builder_radial_alpha.sh
+  - test-only dataset generation passed:
+    - /home/huhao/adv_ir/dataset_ours/motion_blur_rotation0.02/test
+    - counts: input=1024, target=1024, v_field_sampled=64, manifest.records=1024
+
+- date: 2026-04-27
+  title: add standalone radial-alpha motion blur dataset builder and launcher
+  changes:
+  - added:
+    - /home/huhao/adv_ir/source/motion_blur_dataset_builder_radial_alpha.py
+    - /home/huhao/adv_ir/source/merge_motion_blur_split_shards.py
+    - /home/huhao/adv_ir/source/run_motion_blur_dataset_builder_radial_alpha.sh
+  - updated docs:
+    - /home/huhao/adv_ir/source/doc/module_document.txt
+    - /home/huhao/adv_ir/source/doc/work_log.txt
+  - behavior:
+    - standalone implementation; legacy `/home/huhao/adv_ir/source/motion_blur_dataset_builder.py` is unchanged.
+    - per-image alpha uniform in [0, 0.02].
+    - per-pixel displacement field follows `v(r,theta)=alpha*r*vec(theta)` with center origin and normalized diagonal length 1.
+  validations:
+  - syntax checks passed:
+    - conda run -n advir --no-capture-output python -m py_compile /home/huhao/adv_ir/source/motion_blur_dataset_builder_radial_alpha.py /home/huhao/adv_ir/source/merge_motion_blur_split_shards.py
+  - smoke generation passed:
+    - OUTPUT_ROOT=/home/huhao/adv_ir/tmp_demo/motion_sim_radial_alpha_smoke TRAIN_USE_SHARDS=0 TRAIN_COUNT=4 VAL_COUNT=2 TEST_COUNT=2 TRAIN_SHARD0_DEVICE=auto VAL_DEVICE=auto TEST_DEVICE=auto PROGRESS_INTERVAL=1 /home/huhao/adv_ir/source/run_motion_blur_dataset_builder_radial_alpha.sh
+    - output root: /home/huhao/adv_ir/tmp_demo/motion_sim_radial_alpha_smoke
 
 - date: 2026-04-26
   title: align adv50 gaussian airlight/beta launcher with haze_hard dataset script style

@@ -84,7 +84,7 @@ def _apply_haze_with_scalar_params(
     clear_image: torch.Tensor,
     fog_density: float,
     global_light_intensity: float,
-) -> tuple[torch.Tensor, float]:
+) -> torch.Tensor:
     if clear_image.ndim != 4:
         raise ValueError(f"clear_image must be BCHW, got shape={tuple(clear_image.shape)}")
 
@@ -93,7 +93,7 @@ def _apply_haze_with_scalar_params(
     )
     airlight = torch.full_like(clear_image, fill_value=float(global_light_intensity))
     hazy_image = clear_image * transmission + airlight * (1.0 - transmission)
-    return hazy_image.clamp(0.0, 1.0), float(transmission.item())
+    return hazy_image.clamp(0.0, 1.0)
 
 
 def generate_haze_split_dataset(
@@ -151,7 +151,7 @@ def generate_haze_split_dataset(
         fog_density = _sample_exp_uniform(fog_density_min, fog_density_max, rng=rng, name="fog_density")
 
         with torch.no_grad():
-            i_deg, transmission_scalar = _apply_haze_with_scalar_params(
+            i_deg = _apply_haze_with_scalar_params(
                 clear_image=i_gt,
                 fog_density=float(fog_density),
                 global_light_intensity=float(global_light),
@@ -173,7 +173,6 @@ def generate_haze_split_dataset(
                 "source_hw": [int(h), int(w)],
                 "global_light_intensity": float(global_light),
                 "fog_density": float(fog_density),
-                "transmission_scalar": float(transmission_scalar),
                 "sampling_mode": "exp_uniform",
             }
         )

@@ -83,6 +83,8 @@ class promptir_adv_mix_dataset(Dataset):
         self.adv_gaussian_extra_cells = int(getattr(args, "adv_gaussian_extra_cells", 2))
         self.adv_gaussian_enable_offset = bool(getattr(args, "adv_gaussian_enable_offset", False))
         self.adv_gaussian_offset_max = float(getattr(args, "adv_gaussian_offset_max", 0.5))
+        self.adv_map_lambda_first_order = float(getattr(args, "adv_map_lambda_first_order", 0.1))
+        self.adv_map_lambda_second_order = float(getattr(args, "adv_map_lambda_second_order", 0.5))
         self.adv_gaussian_offset_lambda_first_order = float(getattr(args, "adv_gaussian_offset_lambda_first_order", 0.05))
         self.adv_gaussian_offset_lambda_second_order = float(getattr(args, "adv_gaussian_offset_lambda_second_order", 0.2))
         self.adv_motion_num_steps = int(getattr(args, "adv_motion_num_steps", 16))
@@ -93,6 +95,10 @@ class promptir_adv_mix_dataset(Dataset):
         else:
             self.adv_motion_dmax = float(adv_motion_dmax_raw)
         self.adv_motion_dlambda = float(getattr(args, "adv_motion_dlambda", 0.0))
+        adv_motion_low_res_height_raw = getattr(args, "adv_motion_low_res_height", None)
+        adv_motion_low_res_width_raw = getattr(args, "adv_motion_low_res_width", None)
+        self.adv_motion_low_res_height: int | None = None if adv_motion_low_res_height_raw is None else int(adv_motion_low_res_height_raw)
+        self.adv_motion_low_res_width: int | None = None if adv_motion_low_res_width_raw is None else int(adv_motion_low_res_width_raw)
         self.adv_haze_airlight_min = float(getattr(args, "adv_haze_airlight_min", 0.85))
         self.adv_haze_airlight_max = float(getattr(args, "adv_haze_airlight_max", 1.0))
         self.adv_haze_airlight_jitter = float(getattr(args, "adv_haze_airlight_jitter", 0.02))
@@ -107,6 +113,10 @@ class promptir_adv_mix_dataset(Dataset):
             raise ValueError(f"adv_gaussian_extra_cells must be >= 0, got {self.adv_gaussian_extra_cells}")
         if self.adv_gaussian_offset_max < 0:
             raise ValueError(f"adv_gaussian_offset_max must be >= 0, got {self.adv_gaussian_offset_max}")
+        if self.adv_map_lambda_first_order < 0:
+            raise ValueError(f"adv_map_lambda_first_order must be >= 0, got {self.adv_map_lambda_first_order}")
+        if self.adv_map_lambda_second_order < 0:
+            raise ValueError(f"adv_map_lambda_second_order must be >= 0, got {self.adv_map_lambda_second_order}")
         if self.adv_gaussian_offset_lambda_first_order < 0:
             raise ValueError(
                 "adv_gaussian_offset_lambda_first_order must be >= 0, "
@@ -121,6 +131,14 @@ class promptir_adv_mix_dataset(Dataset):
             raise ValueError(f"adv_motion_num_steps must be > 0, got {self.adv_motion_num_steps}")
         if self.adv_motion_dlambda < 0:
             raise ValueError(f"adv_motion_dlambda must be >= 0, got {self.adv_motion_dlambda}")
+        if self.adv_motion_low_res_height is not None and self.adv_motion_low_res_height <= 0:
+            raise ValueError(
+                f"adv_motion_low_res_height must be > 0 when provided, got {self.adv_motion_low_res_height}"
+            )
+        if self.adv_motion_low_res_width is not None and self.adv_motion_low_res_width <= 0:
+            raise ValueError(
+                f"adv_motion_low_res_width must be > 0 when provided, got {self.adv_motion_low_res_width}"
+            )
         if self.adv_haze_airlight_min > self.adv_haze_airlight_max:
             raise ValueError(
                 "adv_haze_airlight_min must be <= adv_haze_airlight_max, "
@@ -709,6 +727,8 @@ class promptir_adv_mix_dataset(Dataset):
                         gaussian_extra_cells=self.adv_gaussian_extra_cells,
                         gaussian_enable_offset=self.adv_gaussian_enable_offset,
                         gaussian_offset_max=self.adv_gaussian_offset_max,
+                        map_lambda_first_order=self.adv_map_lambda_first_order,
+                        map_lambda_second_order=self.adv_map_lambda_second_order,
                         gaussian_offset_lambda_first_order=self.adv_gaussian_offset_lambda_first_order,
                         gaussian_offset_lambda_second_order=self.adv_gaussian_offset_lambda_second_order,
                         airlight_min=self.adv_haze_airlight_min,
@@ -764,6 +784,10 @@ class promptir_adv_mix_dataset(Dataset):
                         gaussian_extra_cells=self.adv_gaussian_extra_cells,
                         gaussian_enable_offset=self.adv_gaussian_enable_offset,
                         gaussian_offset_max=self.adv_gaussian_offset_max,
+                        map_low_res_height=self.adv_motion_low_res_height,
+                        map_low_res_width=self.adv_motion_low_res_width,
+                        map_lambda_first_order=self.adv_map_lambda_first_order,
+                        map_lambda_second_order=self.adv_map_lambda_second_order,
                         gaussian_offset_lambda_first_order=self.adv_gaussian_offset_lambda_first_order,
                         gaussian_offset_lambda_second_order=self.adv_gaussian_offset_lambda_second_order,
                     )

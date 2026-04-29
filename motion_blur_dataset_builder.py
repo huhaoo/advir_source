@@ -71,10 +71,8 @@ def _select_source_paths(clear_paths: list[Path], count: int, rng: random.Random
 
 
 def _effective_magnitude_for_hw(dmax: float, h: int, w: int) -> float:
+    del h, w
     dmax_f = float(dmax)
-    if dmax_f < 0:
-        diagonal = math.sqrt(float(h * h + w * w))
-        return (-dmax_f) * diagonal
     return abs(dmax_f)
 
 
@@ -228,6 +226,9 @@ def generate_motion_blur_split_dataset(
                 "dx_magnitude": float(dx_mag),
                 "dx_value_x": float(vx),
                 "dx_value_y": float(vy),
+                "dx_magnitude_diagonal_unit": float(dx_mag),
+                "dx_value_x_diagonal_unit": float(vx),
+                "dx_value_y_diagonal_unit": float(vy),
             }
         )
 
@@ -244,7 +245,8 @@ def generate_motion_blur_split_dataset(
             "dmax_max": float(dmax_max),
             "theta_min": float(theta_min),
             "theta_max": float(theta_max),
-            "dmax_rule": "if dmax < 0: |dx| = (-dmax) * diagonal_length; else |dx| = abs(dmax)",
+            "dmax_rule": "|dx| = abs(dmax)",
+            "dx_unit": "diagonal_length=1",
         },
         "motion_blur": {
             "num_steps": int(num_steps),

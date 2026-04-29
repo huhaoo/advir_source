@@ -32,7 +32,7 @@ class MotionBlurDegradationConfig:
 
 
 class motion_blur_degradation(nn.Module):
-    """Differentiable per-pixel motion blur with trainable dx map."""
+    """Differentiable per-pixel motion blur with diagonal-normalized dx map."""
 
     def __init__(self, config: MotionBlurDegradationConfig | None = None) -> None:
         super().__init__()
@@ -91,17 +91,40 @@ class motion_blur_degradation(nn.Module):
         )
         if effective_dmax is not None:
             with torch.no_grad():
-                self.dx_map_module.get_low_res_map().clamp_(-effective_dmax, effective_dmax)
-                self.dy_map_module.get_low_res_map().clamp_(-effective_dmax, effective_dmax)
+                dx_low = self.dx_map_module.get_low_res_map()
+                dy_low = self.dy_map_module.get_low_res_map()
+                low_flow = torch.cat((dx_low, dy_low), dim=1)
+                low_flow = self._project_flow_to_dmax(flow=low_flow, dmax=effective_dmax)
+                dx_low.copy_(low_flow[:, 0:1])
+                dy_low.copy_(low_flow[:, 1:2])
 
     def _effective_dmax_for_hw(self, h: int, w: int) -> float | None:
+        del h, w
         if self.dmax is None:
             return None
-        dmax = float(self.dmax)
-        if dmax < 0:
-            diagonal = math.sqrt(float(h * h + w * w))
-            return (-dmax) * diagonal
-        return dmax
+        return abs(float(self.dmax))
+
+    def _diagonal_length_for_hw(self, h: int, w: int) -> float:
+        return math.sqrt(float(h * h + w * w))
+
+    def _diag_dx_to_pixel_dx(self, dx_diag: Tensor, h: int, w: int) -> Tensor:
+        diagonal = self._diagonal_length_for_hw(h=h, w=w)
+        return dx_diag * diagonal
+
+    def _project_flow_to_dmax(self, flow: Tensor, dmax: float | None) -> Tensor:
+        if dmax is None:
+            return flow
+        dmax_f = float(dmax)
+        if dmax_f <= 0:
+            return flow * 0.0
+        flow_norm = torch.sqrt((flow[:, 0:1] ** 2 + flow[:, 1:2] ** 2).clamp_min(0.0))
+        max_norm_per_sample = flow_norm.amax(dim=(1, 2, 3), keepdim=True)
+        scale = torch.where(
+            max_norm_per_sample > 0.0,
+            dmax_f / max_norm_per_sample,
+            torch.zeros_like(max_norm_per_sample),
+        )
+        return flow * scale
 
     def _check_image(self, image: Tensor) -> None:
         if not isinstance(image, torch.Tensor):
@@ -150,7 +173,7 @@ class motion_blur_degradation(nn.Module):
             w=self.dx_map_module.high_res_width,
         )
         if effective_dmax is not None:
-            flow = flow.clamp(-effective_dmax, effective_dmax)
+            flow = self._project_flow_to_dmax(flow=flow, dmax=effective_dmax)
         return flow
 
     def _pixel_to_normalized(self, x: Tensor, size: int) -> Tensor:
@@ -171,10 +194,10 @@ class motion_blur_degradation(nn.Module):
         yy, xx = torch.meshgrid(ys, xs, indexing="ij")
         return torch.stack((xx, yy), dim=-1).unsqueeze(0)
 
-    def _forward_batchified(self, image: Tensor, dx: Tensor) -> Tensor:
+    def _forward_batchified(self, image: Tensor, dx_pixel: Tensor) -> Tensor:
         b, c, h, w = image.shape
         base_xy = self._build_base_xy(h=h, w=w, dtype=image.dtype, device=image.device)
-        dx_xy = dx.permute(0, 2, 3, 1).contiguous()
+        dx_xy = dx_pixel.permute(0, 2, 3, 1).contiguous()
 
         t = (torch.arange(self.num_steps, dtype=image.dtype, device=image.device) + 0.5) / float(self.num_steps) - 0.5
         sample_xy = base_xy.unsqueeze(0) + t.view(self.num_steps, 1, 1, 1, 1) * dx_xy.unsqueeze(0)
@@ -191,10 +214,10 @@ class motion_blur_degradation(nn.Module):
         )
         return sampled.view(self.num_steps, b, c, h, w).mean(dim=0)
 
-    def _forward_loop(self, image: Tensor, dx: Tensor) -> Tensor:
+    def _forward_loop(self, image: Tensor, dx_pixel: Tensor) -> Tensor:
         _, _, h, w = image.shape
         base_xy = self._build_base_xy(h=h, w=w, dtype=image.dtype, device=image.device)
-        dx_xy = dx.permute(0, 2, 3, 1).contiguous()
+        dx_xy = dx_pixel.permute(0, 2, 3, 1).contiguous()
 
         output = torch.zeros_like(image)
         t = (torch.arange(self.num_steps, dtype=image.dtype, device=image.device) + 0.5) / float(self.num_steps) - 0.5
@@ -222,15 +245,16 @@ class motion_blur_degradation(nn.Module):
             dx = self._check_optional_dx(dx=dx, image=image)
         effective_dmax = self._effective_dmax_for_hw(h=int(image.shape[-2]), w=int(image.shape[-1]))
         if effective_dmax is not None:
-            dx = dx.clamp(-effective_dmax, effective_dmax)
+            dx = self._project_flow_to_dmax(flow=dx, dmax=effective_dmax)
         if dx.dtype != image.dtype:
             dx = dx.to(image.dtype)
         if dx.device != image.device:
             dx = dx.to(image.device)
+        dx_pixel = self._diag_dx_to_pixel_dx(dx_diag=dx, h=int(image.shape[-2]), w=int(image.shape[-1]))
 
         if self.batchify_steps:
-            return self._forward_batchified(image=image, dx=dx)
-        return self._forward_loop(image=image, dx=dx)
+            return self._forward_batchified(image=image, dx_pixel=dx_pixel)
+        return self._forward_loop(image=image, dx_pixel=dx_pixel)
 
     def get_regularization_loss(self) -> Tensor:
         loss_map = self.dx_map_module.regularization_loss() + self.dy_map_module.regularization_loss()
@@ -281,6 +305,8 @@ def random_haze_degradation_config_from_image(
     gaussian_extra_cells: int = 2,
     gaussian_enable_offset: bool = False,
     gaussian_offset_max: float = 0.5,
+    map_lambda_first_order: float = 1e-1,
+    map_lambda_second_order: float = 5e-1,
     gaussian_offset_lambda_first_order: float = 5e-2,
     gaussian_offset_lambda_second_order: float = 2e-1,
     airlight_min: float = 0.85,
@@ -310,6 +336,20 @@ def random_haze_degradation_config_from_image(
         raise ValueError(f"gaussian_enable_offset must be bool, got {type(gaussian_enable_offset)!r}")
     if not isinstance(gaussian_offset_max, (int, float)) or float(gaussian_offset_max) < 0:
         raise ValueError(f"gaussian_offset_max must be numeric and >= 0, got {gaussian_offset_max}")
+    if not isinstance(map_lambda_first_order, (int, float)):
+        raise ValueError(
+            "map_lambda_first_order must be numeric, "
+            f"got {type(map_lambda_first_order)!r}"
+        )
+    if not isinstance(map_lambda_second_order, (int, float)):
+        raise ValueError(
+            "map_lambda_second_order must be numeric, "
+            f"got {type(map_lambda_second_order)!r}"
+        )
+    if float(map_lambda_first_order) < 0:
+        raise ValueError(f"map_lambda_first_order must be >= 0, got {map_lambda_first_order}")
+    if float(map_lambda_second_order) < 0:
+        raise ValueError(f"map_lambda_second_order must be >= 0, got {map_lambda_second_order}")
     if not isinstance(gaussian_offset_lambda_first_order, (int, float)):
         raise ValueError(
             "gaussian_offset_lambda_first_order must be numeric, "
@@ -381,8 +421,8 @@ def random_haze_degradation_config_from_image(
             gaussian_extra_cells=gaussian_extra_cells,
             gaussian_enable_offset=gaussian_enable_offset,
             gaussian_offset_max=gaussian_offset_max,
-            lambda_first_order=0.1,
-            lambda_second_order=0.5,
+            lambda_first_order=float(map_lambda_first_order),
+            lambda_second_order=float(map_lambda_second_order),
             lambda_offset_first_order=float(gaussian_offset_lambda_first_order),
             lambda_offset_second_order=float(gaussian_offset_lambda_second_order),
             init_mode="normal",
@@ -403,7 +443,7 @@ def random_motion_blur_degradation_config_from_image(
     padding_mode: str = "border",
     align_corners: bool = True,
     batchify_steps: bool = True,
-    dmax: float | None = -0.02,
+    dmax: float | None = 0.05,
     dlambda: float = 0.0,
     interp_mode: str = "bicubic",
     gaussian_radius: int = 4,
@@ -411,13 +451,17 @@ def random_motion_blur_degradation_config_from_image(
     gaussian_extra_cells: int = 2,
     gaussian_enable_offset: bool = False,
     gaussian_offset_max: float = 0.5,
+    map_low_res_height: int | None = None,
+    map_low_res_width: int | None = None,
+    map_lambda_first_order: float = 1e-1,
+    map_lambda_second_order: float = 5e-1,
     gaussian_offset_lambda_first_order: float = 5e-2,
     gaussian_offset_lambda_second_order: float = 2e-1,
 ) -> MotionBlurDegradationConfig:
     """Sample one motion blur degradation config from an input image.
 
     When `dmax` is not None, this sampler draws the actual `cfg.dmax`
-    uniformly from `[dmax/2, dmax]` (order-insensitive for negative values).
+    uniformly from `[dmax/2, dmax]` (order-insensitive for sign/order).
     """
     _, h, w = _extract_chw_from_image(image)
 
@@ -438,6 +482,26 @@ def random_motion_blur_degradation_config_from_image(
         raise ValueError(f"gaussian_enable_offset must be bool, got {type(gaussian_enable_offset)!r}")
     if not isinstance(gaussian_offset_max, (int, float)) or float(gaussian_offset_max) < 0:
         raise ValueError(f"gaussian_offset_max must be numeric and >= 0, got {gaussian_offset_max}")
+    if map_low_res_height is not None:
+        if not isinstance(map_low_res_height, int) or map_low_res_height <= 0:
+            raise ValueError(f"map_low_res_height must be positive int or None, got {map_low_res_height}")
+    if map_low_res_width is not None:
+        if not isinstance(map_low_res_width, int) or map_low_res_width <= 0:
+            raise ValueError(f"map_low_res_width must be positive int or None, got {map_low_res_width}")
+    if not isinstance(map_lambda_first_order, (int, float)):
+        raise ValueError(
+            "map_lambda_first_order must be numeric, "
+            f"got {type(map_lambda_first_order)!r}"
+        )
+    if not isinstance(map_lambda_second_order, (int, float)):
+        raise ValueError(
+            "map_lambda_second_order must be numeric, "
+            f"got {type(map_lambda_second_order)!r}"
+        )
+    if float(map_lambda_first_order) < 0:
+        raise ValueError(f"map_lambda_first_order must be >= 0, got {map_lambda_first_order}")
+    if float(map_lambda_second_order) < 0:
+        raise ValueError(f"map_lambda_second_order must be >= 0, got {map_lambda_second_order}")
     if not isinstance(gaussian_offset_lambda_first_order, (int, float)):
         raise ValueError(
             "gaussian_offset_lambda_first_order must be numeric, "
@@ -462,7 +526,8 @@ def random_motion_blur_degradation_config_from_image(
         else:
             sampled_dmax = float(dmax_lo + (dmax_hi - dmax_lo) * float(torch.rand(1).item()))
 
-    motion_lh, motion_lw = max(4, min(16, h)), max(4, min(16, w))
+    motion_lh = int(map_low_res_height) if map_low_res_height is not None else max(4, min(16, h))
+    motion_lw = int(map_low_res_width) if map_low_res_width is not None else max(4, min(16, w))
     return MotionBlurDegradationConfig(
         map_config=ControlMapConfig(
             low_res_height=motion_lh,
@@ -476,6 +541,8 @@ def random_motion_blur_degradation_config_from_image(
             gaussian_extra_cells=gaussian_extra_cells,
             gaussian_enable_offset=gaussian_enable_offset,
             gaussian_offset_max=gaussian_offset_max,
+            lambda_first_order=float(map_lambda_first_order),
+            lambda_second_order=float(map_lambda_second_order),
             lambda_offset_first_order=float(gaussian_offset_lambda_first_order),
             lambda_offset_second_order=float(gaussian_offset_lambda_second_order),
             init_mode="normal",
@@ -500,6 +567,8 @@ def random_degradation_configs_from_image(
     gaussian_extra_cells: int = 2,
     gaussian_enable_offset: bool = False,
     gaussian_offset_max: float = 0.5,
+    map_lambda_first_order: float = 1e-1,
+    map_lambda_second_order: float = 5e-1,
     gaussian_offset_lambda_first_order: float = 5e-2,
     gaussian_offset_lambda_second_order: float = 2e-1,
 ) -> HazeDegradationConfig:
@@ -512,6 +581,8 @@ def random_degradation_configs_from_image(
         gaussian_extra_cells=gaussian_extra_cells,
         gaussian_enable_offset=gaussian_enable_offset,
         gaussian_offset_max=gaussian_offset_max,
+        map_lambda_first_order=map_lambda_first_order,
+        map_lambda_second_order=map_lambda_second_order,
         gaussian_offset_lambda_first_order=gaussian_offset_lambda_first_order,
         gaussian_offset_lambda_second_order=gaussian_offset_lambda_second_order,
     )
